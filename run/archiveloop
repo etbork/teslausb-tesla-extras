@@ -2,14 +2,22 @@
 ARCHIVE_HOST_NAME="$1"
 
 export LOG_FILE=/mutable/archiveloop.log
+export EVENT_LOG=/mutable/teslausb-events.log
 
 export CAM_MOUNT=/mnt/cam
+export SOUNDS_MOUNT=/mnt/sounds
 export MUSIC_MOUNT=/mnt/music
 export ARCHIVE_MOUNT=/mnt/archive
 
 function log () {
   echo "$( date )" >> "$LOG_FILE"
   echo "$1" >> "$LOG_FILE"
+}
+
+function event () {
+  local message="$1"
+  echo "$( date ) : $message" >> "$EVENT_LOG"
+  log "$message"
 }
 
 function fix_errors_in_mount_point () {
@@ -21,6 +29,7 @@ function fix_errors_in_mount_point () {
 
 function fix_errors_in_mounted_files () {
   fix_errors_in_mount_point "$CAM_MOUNT"
+  fix_errors_in_sounds_file
   fix_errors_in_mount_point "$MUSIC_MOUNT"
 }
 
@@ -135,7 +144,13 @@ function ensure_cam_file_is_mounted () {
 function ensure_music_file_is_mounted () {
   log "Ensuring music backing file is mounted..."
   ensure_mountpoint_is_mounted_with_retry "$MUSIC_MOUNT"
-  log "Ensured cam drive is mounted."
+  log "Ensured music drive is mounted."
+}
+
+function ensure_sounds_file_is_mounted () {
+  log "Ensuring extras backing file is mounted..."
+  ensure_mountpoint_is_mounted_with_retry "$SOUNDS_MOUNT"
+  log "Ensured extras drive is mounted."
 }
 
 function unmount_mount_point () {
@@ -153,8 +168,19 @@ function unmount_music_file () {
   unmount_mount_point "$MUSIC_MOUNT"
 }
 
+function unmount_sounds_file () {
+  unmount_mount_point "$SOUNDS_MOUNT"
+}
+
 function fix_errors_in_music_file () {
   fix_errors_in_mount_point "$MUSIC_MOUNT"
+}
+
+function fix_errors_in_sounds_file () {
+  if [ -e "$SOUNDS_MOUNT" ]
+  then
+    fix_errors_in_mount_point "$SOUNDS_MOUNT"
+  fi
 }
 
 function wait_for_archive_to_be_unreachable () {
@@ -191,8 +217,18 @@ function mount_and_fix_errors_in_music_file () {
   fi
 }
 
+function mount_and_fix_errors_in_sounds_file () {
+  if [ -e "$SOUNDS_MOUNT" ]
+  then
+    ensure_sounds_file_is_mounted
+    fix_errors_in_sounds_file
+    unmount_sounds_file
+  fi
+}
+
 function mount_and_fix_errors_in_files () {
   mount_and_fix_errors_in_cam_file
+  mount_and_fix_errors_in_sounds_file
   mount_and_fix_errors_in_music_file
 }
 
@@ -204,6 +240,8 @@ function disconnect_usb_drives_from_host () {
 
 function archive_teslacam_clips () {
   log "Starting..."
+  local archive_succeeded=false
+  local media_sync_status="not configured"
 
   /root/bin/connect-archive.sh
 
@@ -213,13 +251,51 @@ function archive_teslacam_clips () {
 
   fix_errors_in_cam_file
 
-  /root/bin/archive-clips.sh
+  if /root/bin/archive-clips.sh
+  then
+    archive_succeeded=true
+    event "Archive completed."
+  else
+    event "Archive script failed."
+    /root/bin/send-pushover "TeslaUSB Archive Failed" "Archive script failed. Check archiveloop.log on the Pi." "0" || true
+  fi
+
+  if [ -x /root/bin/sync-media.sh ] && [ -r /root/.teslaMediaSyncConfig ]
+  then
+    if /root/bin/sync-media.sh
+    then
+      media_sync_status="completed"
+      event "Media sync completed."
+    else
+      media_sync_status="failed"
+      event "Media sync failed."
+      /root/bin/send-pushover "TeslaUSB Media Sync Failed" "Media sync failed. Check archiveloop.log on the Pi." "0" || true
+    fi
+  fi
+
+  if [ -x /root/bin/check-free-space.sh ]
+  then
+    /root/bin/check-free-space.sh || log "Free space check failed."
+  fi
+
+  if [ -x /root/bin/write-status-report.sh ]
+  then
+    /root/bin/write-status-report.sh || log "Status report failed."
+  fi
 
   /root/bin/disconnect-archive.sh
 
   unmount_cam_file
 
   connect_usb_drives_to_host
+
+  if [ "$archive_succeeded" = true ]
+  then
+    /root/bin/send-pushover "TeslaUSB Sync Complete" "Archive cycle completed. Media sync: $media_sync_status. Status report updated on the archive share." "0" || true
+    return 0
+  fi
+
+  return 1
 }
 
 function archive_clips () {
@@ -248,12 +324,17 @@ export -f ensure_mountpoint_is_mounted
 export -f retry
 export -f ensure_mountpoint_is_mounted_with_retry
 export -f log
+export -f unmount_music_file
+export -f unmount_sounds_file
+export -f ensure_sounds_file_is_mounted
+export -f ensure_music_file_is_mounted
 
 log "Starting..."
 
 if archive_is_reachable
 then
   # archive_clips will fix errors in the cam file
+  mount_and_fix_errors_in_sounds_file
   mount_and_fix_errors_in_music_file
 
   archive_clips

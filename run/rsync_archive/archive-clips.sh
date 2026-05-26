@@ -4,13 +4,20 @@ log "Archiving through rsync..."
 
 source /root/.teslaCamRsyncConfig
 
-num_files_moved=$(rsync -auzvh --no-perms --stats --log-file=/tmp/archive-rsync-cmd.log /mnt/cam/TeslaCam/saved* $user@$server:$path | awk '/files transferred/{print $NF}')
+shopt -s nullglob
+saved_files=(/mnt/cam/TeslaCam/saved*)
 
-/root/bin/send-pushover "$num_files_moved"
-
-if [ $num_files_moved > 0 ]
+if [ "${#saved_files[@]}" -eq 0 ]
 then
-  log "Successfully synced files through rsync."
-else
   log "No files to archive through rsync."
+  exit 0
+fi
+
+num_files_moved=$(rsync -auzvh --remove-source-files --no-perms --stats --log-file=/tmp/archive-rsync-cmd.log "${saved_files[@]}" "$user@$server:$path" | awk '/files transferred/{print $NF}')
+
+if [ "$num_files_moved" -gt 0 ]
+then
+  log "Successfully synced $num_files_moved file(s) through rsync."
+else
+  log "No files were transferred through rsync."
 fi

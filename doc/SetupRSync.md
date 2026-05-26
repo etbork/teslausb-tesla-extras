@@ -45,6 +45,9 @@ Explanations for each:
 * `RSYNC_SERVER`: The IP address/hostname of the destination machine
 * `RSYNC_PATH`: The path on the destination machine where the files will be saved
 
+Successfully archived clips are removed from the TeslaUSB CAM drive after
+`rsync` confirms transfer, matching the behavior of the other archive backends.
+
 An example config is below:
 ```
 export ARCHIVE_SYSTEM=rsync

@@ -90,6 +90,13 @@ For example, using `export campercent=100` would allocate 100% of the space to r
 ### Optional: Configure push notification via Pushover
 If you'd like to receive a text message when your Pi finishes archiving clips follow these [Instructions](doc/ConfigureNotificationsForArchive.md).
 
+### Optional: Sync music and Tesla extras
+If you want to manage media files on your archive server and have the Pi copy
+them to Tesla-visible media drives, set `campercent` below `100` and follow
+these [Instructions](doc/SetupMediaSync.md). For a separate extras drive for
+light shows, lock chimes, wraps, and license plate art, also set
+`soundspercent`.
+
 ### Optional: Configure a hostname
 The default network hostname for the Pi will become `teslausb`.  If you want to have more than one TeslaUSB devices on your network (for example you have more than one Tesla in your houseold), then you can specify an alternate hostname for the Pi by running this command:
 

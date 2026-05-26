@@ -1,6 +1,7 @@
 #!/bin/bash -eu
 
 REPO=${REPO:-cimryan}
+REPOSITORY=${REPOSITORY:-teslausb}
 BRANCH=${BRANCH:-master}
 
 ARCHIVE_SYSTEM=${ARCHIVE_SYSTEM:-none}
@@ -22,7 +23,7 @@ function get_script () {
     local remote_path="${3:-}"
 
     echo "Starting download for $local_path/$name"
-    curl -o "$local_path/$name" https://raw.githubusercontent.com/"$REPO"/teslausb/"$BRANCH"/"$remote_path"/"$name"
+    curl --fail --show-error --location -o "$local_path/$name" https://raw.githubusercontent.com/"$REPO"/"$REPOSITORY"/"$BRANCH"/"$remote_path"/"$name"
     chmod +x "$local_path/$name"
     echo "Done"
 }
@@ -116,6 +117,10 @@ function install_archive_scripts () {
 
     echo "Installing base archive scripts into $install_path"
     get_script $install_path archiveloop run
+    get_script $install_path sync-media.sh run
+    get_script $install_path validate-media.sh run
+    get_script $install_path write-status-report.sh run
+    get_script $install_path check-free-space.sh run
     get_script $install_path remountfs_rw run
     get_script $install_path lookup-ip-address.sh run
 
@@ -150,10 +155,12 @@ function check_pushover_configuration () {
 function configure_pushover () {
     if [ ! -z "${pushover_enabled+x}" ]
     then
+        umask 077
         echo "Enabling pushover"
         echo "export pushover_enabled=true" > /root/.teslaCamPushoverCredentials
         echo "export pushover_user_key=$pushover_user_key" >> /root/.teslaCamPushoverCredentials
         echo "export pushover_app_key=$pushover_app_key" >> /root/.teslaCamPushoverCredentials
+        chmod 600 /root/.teslaCamPushoverCredentials
     else
         echo "Pushover not configured."
     fi
@@ -168,6 +175,26 @@ function check_and_configure_pushover () {
 function install_pushover_scripts() {
     local install_path="$1"
     get_script $install_path send-pushover run
+}
+
+function configure_media_sync () {
+    if [ "${MEDIA_SYNC_ENABLED:-false}" = "true" ]
+    then
+        local config_file_path="/root/.teslaMediaSyncConfig"
+        local source_dir="${MEDIA_SYNC_SOURCE_DIR:-TeslaUSB-Media}"
+        local sounds_source_dir="${MEDIA_SYNC_SOUNDS_SOURCE_DIR:-TeslaExtras}"
+        local music_source_dir="${MEDIA_SYNC_MUSIC_SOURCE_DIR:-TeslaMedia}"
+
+        umask 077
+        echo "Configuring media sync from archive folder: $source_dir"
+        echo "MEDIA_SYNC_ENABLED=true" > "$config_file_path"
+        echo "MEDIA_SYNC_SOURCE_DIR=$source_dir" >> "$config_file_path"
+        echo "MEDIA_SYNC_SOUNDS_SOURCE_DIR=$sounds_source_dir" >> "$config_file_path"
+        echo "MEDIA_SYNC_MUSIC_SOURCE_DIR=$music_source_dir" >> "$config_file_path"
+        chmod 600 "$config_file_path"
+    else
+        echo "Media sync not configured."
+    fi
 }
 
 if [ "$ARCHIVE_SYSTEM" = "none" ]
@@ -200,8 +227,6 @@ echo "Using archive module: $archive_module"
 install_archive_scripts $INSTALL_DIR $archive_module
 "$INSTALL_DIR"/verify-archive-configuration.sh
 "$INSTALL_DIR"/configure-archive.sh
+configure_media_sync
 
 install_rc_local "$INSTALL_DIR"
-
-
-

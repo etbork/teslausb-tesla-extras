@@ -10,3 +10,10 @@ OPTIONAL: You can choose to integrate with [Pushover](https://pushover.net) to g
     export pushover_user_key=put_your_userkey_here
     export pushover_app_key=put_your_appkey_here
     ```
+
+TeslaUSB sends one completion notification after an archive cycle finishes.
+With media sync enabled, the completion message includes media sync status.
+It can also notify you about archive failures, media sync failures, LightShow
+validation warnings, and low free space on the archive or media drives.
+TeslaCam/CAM low-space warnings are disabled by default because Tesla normally
+manages the rolling camera buffer itself.

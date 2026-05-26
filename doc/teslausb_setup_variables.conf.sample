@@ -14,7 +14,14 @@ export archiveserver=your_archive_name_or_ip
 export sharename=your_archive_share_name
 export shareuser=username
 export sharepassword=password
-export campercent=100
+export campercent=60
+
+# Optional: create a third Tesla-visible drive for Tesla extras.
+# campercent + soundspercent must leave room for the music partition.
+# export soundspercent=15
+# export CAM_LABEL=TESLADRIVE
+# export SOUNDS_LABEL=TeslaExtras
+# export MUSIC_LABEL=TeslaMedia
 
 # Wifi setup information
 export SSID=your_ssid
@@ -22,6 +29,15 @@ export WIFIPASS=your_pass
 
 # If doing a headless (i.e. automatic) setup
 export HEADLESS_SETUP=true
+
+# Optional: sync media files from the archive share to the Tesla-visible media
+# partitions. The default source layout is:
+# TeslaUSB-Media/TeslaExtras and TeslaUSB-Media/TeslaMedia.
+# Existing TeslaUSB-Media/SOUNDS_LS folders are still accepted as a fallback.
+# export MEDIA_SYNC_ENABLED=true
+# export MEDIA_SYNC_SOURCE_DIR=TeslaUSB-Media
+# export MEDIA_SYNC_SOUNDS_SOURCE_DIR=TeslaExtras
+# export MEDIA_SYNC_MUSIC_SOURCE_DIR=TeslaMedia
 
 # Uncomment if you want to override the default hostname of "teslausb"
 # export TESLAUSB_HOSTNAME=teslausb-Model3
@@ -32,8 +48,10 @@ export HEADLESS_SETUP=true
 # export pushover_app_key=app_key
 
 # Uncomment and change if you want setup scripts to be pulled
-# from a different repo than the "main" github.com/cimryan/teslausb
+# from a different repo than the "main" github.com/cimryan/teslausb.
+# REPO is the GitHub owner and REPOSITORY is the repository name.
 # export REPO=cimryan
+# export REPOSITORY=teslausb
 
 # Uncomment and change if you want a different branch than master
 # export BRANCH=master

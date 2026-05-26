@@ -30,8 +30,8 @@ function get_script () {
   local name="$2"
   local remote_path="${3:-}"
   
-  curl -o "$local_path/$name" https://raw.githubusercontent.com/"$REPO"/teslausb/"$BRANCH"/"$remote_path"/"$name"
-  # wget -O "$local_path/$name" https://raw.githubusercontent.com/"$REPO"/teslausb/"$BRANCH"/"$remote_path"/"$name"
+  curl --fail --show-error --location -o "$local_path/$name" https://raw.githubusercontent.com/"$REPO"/"$REPOSITORY"/"$BRANCH"/"$remote_path"/"$name"
+  # wget -O "$local_path/$name" https://raw.githubusercontent.com/"$REPO"/"$REPOSITORY"/"$BRANCH"/"$remote_path"/"$name"
   chmod +x "$local_path/$name"
 }
 
@@ -113,6 +113,7 @@ then
     if [ ! -e "/root/bin/setup-teslausb" ] 
     then
       REPO=${REPO:-cimryan}
+      REPOSITORY=${REPOSITORY:-teslausb}
       BRANCH=${BRANCH:-master}
       # Script doesn't exist, grab it. 
       setup_progress "Grabbing main setup file."
@@ -147,7 +148,5 @@ else
   echo "or export HEADLESS=true and run /etc/rc.local if you want to run automatic setup."
 fi
 exit 0
-
-
 
 
