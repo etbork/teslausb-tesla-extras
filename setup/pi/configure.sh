@@ -197,6 +197,17 @@ function configure_media_sync () {
     fi
 }
 
+function configure_archive_options () {
+    local config_file_path="/root/.teslaCamArchiveConfig"
+    local archive_path="${archivepath:-TeslaCamArchive}"
+    local archive_clip_folders="${ARCHIVE_CLIP_FOLDERS:-SavedClips SentryClips RecentClips Photobooth EncryptedClips}"
+
+    umask 077
+    echo "archivepath=$archive_path" > "$config_file_path"
+    echo "ARCHIVE_CLIP_FOLDERS=\"$archive_clip_folders\"" >> "$config_file_path"
+    chmod 600 "$config_file_path"
+}
+
 if [ "$ARCHIVE_SYSTEM" = "none" ]
 then
     echo "Skipping archive configuration."
@@ -227,6 +238,7 @@ echo "Using archive module: $archive_module"
 install_archive_scripts $INSTALL_DIR $archive_module
 "$INSTALL_DIR"/verify-archive-configuration.sh
 "$INSTALL_DIR"/configure-archive.sh
+configure_archive_options
 configure_media_sync
 
 install_rc_local "$INSTALL_DIR"

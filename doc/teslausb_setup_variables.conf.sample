@@ -14,7 +14,11 @@ export archiveserver=your_archive_name_or_ip
 export sharename=your_archive_share_name
 export shareuser=username
 export sharepassword=password
+export archivepath=TeslaCamArchive
 export campercent=60
+
+# Optional: choose which TeslaCam folders are archived from the car-facing drive.
+# export ARCHIVE_CLIP_FOLDERS="SavedClips SentryClips RecentClips Photobooth EncryptedClips"
 
 # Optional: create a third Tesla-visible drive for Tesla extras.
 # campercent + soundspercent must leave room for the music partition.
