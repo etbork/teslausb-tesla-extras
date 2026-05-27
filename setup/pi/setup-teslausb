@@ -130,11 +130,23 @@ function get_ancillary_setup_scripts () {
   get_script /root configure.sh setup/pi
 }
 
+function boot_cmdline_txt_path ()
+{
+  if [ -e /boot/firmware/cmdline.txt ]
+  then
+    echo /boot/firmware/cmdline.txt
+  else
+    echo /boot/cmdline.txt
+  fi
+}
+
 function fix_cmdline_txt_modules_load ()
 {
-  setup_progress "Fixing the modules-load parameter in /boot/cmdline.txt..."
-  cp /boot/cmdline.txt ~
-  cat ~/cmdline.txt | sed 's/ modules-load=dwc2,g_ether/ modules-load=dwc2/' > /boot/cmdline.txt
+  local cmdline_txt
+  cmdline_txt="$(boot_cmdline_txt_path)"
+  setup_progress "Fixing the modules-load parameter in $cmdline_txt..."
+  cp "$cmdline_txt" ~
+  cat ~/cmdline.txt | sed 's/ modules-load=dwc2,g_ether/ modules-load=dwc2/' > "$cmdline_txt"
   rm ~/cmdline.txt
   setup_progress "Fixed cmdline.txt."
 }

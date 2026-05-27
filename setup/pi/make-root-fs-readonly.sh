@@ -2,9 +2,19 @@
 
 # Adapted from https://github.com/adafruit/Raspberry-Pi-Installer-Scripts/blob/master/read-only-fs.sh
 
+function boot_cmdline_txt_path ()
+{
+  if [ -e /boot/firmware/cmdline.txt ]
+  then
+    echo /boot/firmware/cmdline.txt
+  else
+    echo /boot/cmdline.txt
+  fi
+}
+
 function append_cmdline_txt_param() {
   local toAppend="$1"
-  sed -i "s/\'/ ${toAppend}/g" /boot/cmdline.txt >/dev/null
+  sed -i "s/\'/ ${toAppend}/g" "$(boot_cmdline_txt_path)" >/dev/null
 }
 
 echo "Removing unwanted packages..."
@@ -63,10 +73,9 @@ ln -s /tmp/dhcpcd.resolv.conf /etc/resolv.conf
 # tmpfs /var/log tmpfs nodev,nosuid 0 0
 # tmpfs /var/tmp tmpfs nodev,nosuid 0 0
 # tmpfs /tmp     tmpfs nodev,nosuid 0 0
-sed -i -r "s@(/boot\s+vfat\s+\S+)@\1,ro@" /etc/fstab
+sed -i -r "s@(/boot(/firmware)?\s+vfat\s+\S+)@\1,ro@" /etc/fstab
 sed -i -r "s@(/\s+ext4\s+\S+)@\1,ro@" /etc/fstab
 echo "" >> /etc/fstab
 echo "tmpfs /var/log tmpfs nodev,nosuid 0 0" >> /etc/fstab
 echo "tmpfs /var/tmp tmpfs nodev,nosuid 0 0" >> /etc/fstab
 echo "tmpfs /tmp    tmpfs nodev,nosuid 0 0" >> /etc/fstab
-

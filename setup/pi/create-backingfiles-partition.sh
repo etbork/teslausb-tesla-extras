@@ -10,6 +10,16 @@ function setup_progress () {
     echo $1
 }
 
+function boot_cmdline_txt_path ()
+{
+  if [ -e /boot/firmware/cmdline.txt ]
+  then
+    echo /boot/firmware/cmdline.txt
+  else
+    echo /boot/cmdline.txt
+  fi
+}
+
 BACKINGFILES_MOUNTPOINT="$1"
 MUTABLE_MOUNTPOINT="$2"
 
@@ -36,9 +46,11 @@ parted  -a optimal -m /dev/mmcblk0 unit B mkpart primary ext4 "$MUTABLE_PARTITIO
 
 NEW_DISK_IDENTIFIER=$( fdisk -l /dev/mmcblk0 | grep -e "^Disk identifier" | sed "s/Disk identifier: 0x//" )
 
-setup_progress "Writing updated partitions to fstab and /boot/cmdline.txt"
+CMDLINE_TXT="$(boot_cmdline_txt_path)"
+
+setup_progress "Writing updated partitions to fstab and $CMDLINE_TXT"
 sed -i "s/${ORIGINAL_DISK_IDENTIFIER}/${NEW_DISK_IDENTIFIER}/g" /etc/fstab
-sed -i "s/${ORIGINAL_DISK_IDENTIFIER}/${NEW_DISK_IDENTIFIER}/" /boot/cmdline.txt
+sed -i "s/${ORIGINAL_DISK_IDENTIFIER}/${NEW_DISK_IDENTIFIER}/" "$CMDLINE_TXT"
 
 setup_progress "Formatting new partitions..."
 mkfs.ext4 -F /dev/mmcblk0p3
