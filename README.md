@@ -1,155 +1,282 @@
-# teslausb
+# TeslaUSB Tesla Extras
 
-## Intro
+This project is a personal fork of [cimryan/teslausb](https://github.com/cimryan/teslausb). It keeps the original TeslaUSB idea: a Raspberry Pi Zero/Zero W/Zero 2 W pretends to be one or more USB drives for a Tesla, records dashcam footage, and archives clips to a network share when the archive server is reachable.
 
-You can configure a Raspberry Pi Zero W so that your Tesla thinks it's a USB drive and will write dashcam footage to it. Since it's a computer:
-* Scripts running on the Pi can automatically copy the clips to an archive server when you get home. 
-* The Pi can hold both dashcam clips and music files.
-* The Pi can automatically repair filesystem corruption produced by the Tesla's current failure to properly dismount the USB drives before cutting power to the USB ports.
+This fork adds a more complete Tesla media setup for modern Tesla USB use: dashcam footage, lossless music, light shows, lock chimes, wraps, license plate art, folder-based archive organization, Pushover status notifications, and a configurable delay before the Pi disconnects the USB drives to sync.
 
-Archiving the clips can take from seconds to hours depending on how many clips you've saved and how strong the WiFi signal is in your Tesla. If you find that the clips aren't getting completely transferred before the car powers down after you park or before you leave you can use the Tesla app to turn on the Climate control. This will send power to the Raspberry Pi, allowing it to complete the archival operation.
+## What This Fork Does
 
-## Contributing
-You're welcome to contribute to this repo by submitting pull requests, creating issues, and joining this [Slack team](https://join.slack.com/t/smartusbdrivefortesla/shared_invite/enQtNDY4NDIzMTQ0NjA4LTdlYjFkOGE0Y2NkNjYyZTBiZTNmZTY4OGNhODMwZjg4NGNkZWU3MGY2ZDNhODIzZTAxODhhNzEzNDQ2OTFhMTI).
+- Presents Tesla-visible USB storage from Raspberry Pi backing files.
+- Archives TeslaCam footage to a Windows/macOS/Linux SMB share.
+- Archives TeslaCam clips into separate folders such as `RecentClips`, `SavedClips`, `SentryClips`, `Photobooth`, and `EncryptedClips`.
+- Syncs music from a network share to a Tesla-visible `TeslaMedia` drive.
+- Syncs Tesla extras from a network share to a Tesla-visible `TeslaExtras` drive.
+- Supports light shows, lock chimes, wraps, license plate art, Boombox files, and legacy `SOUNDS_LS` layouts.
+- Generates status and media reports on the archive share.
+- Sends Pushover notifications for sync completion, archive failures, media sync failures, and media warnings.
+- Adds a configurable archive delay so the Pi does not immediately yank the USB drive away from the car as soon as the archive share is reachable.
+- Adds compatibility fixes for newer Raspberry Pi OS boot paths and rerunning setup.
 
-## Prerequisites
+## Based On The Original TeslaUSB
 
-### Assumptions
-* You park in range of your wireless network.
-* Your wireless network is configured with WPA2 PSK access.
+Credit goes to the original TeslaUSB project:
 
-### Hardware
+[https://github.com/cimryan/teslausb](https://github.com/cimryan/teslausb)
 
-Required:
-* [Raspberry Pi Zero W](https://www.raspberrypi.org/products/raspberry-pi-zero-w/):  [Adafruit](https://www.adafruit.com/product/3400) or [Amazon](https://www.amazon.com/Raspberry-Pi-Zero-Wireless-model/dp/B06XFZC3BX/)
-  > Note: Of the many varieties of Raspberry Pi avaiable only the Raspberry Pi Zero and Raspberry Pi Zero W can be used as simulated USB drives. It may be possible to use a Pi Zero with a USB Wifi adapter to achieve the same result as the Pi Zero W but this hasn't been confirmed.
+The original project already handled the hard part: using Linux USB gadget mode and `g_mass_storage` so a Raspberry Pi Zero can look like a USB drive to the Tesla. This fork keeps that approach and extends it for a multi-drive Tesla media workflow.
 
-* A Micro SD card, at least 8 GB in size, and an adapter (if necessary) to connect the card to your computer.
-* A mechanism to connect the Pi to the Tesla. Either:
-  * A USB A/Micro B cable: [Adafruit](https://www.adafruit.com/product/898) or [Amazon](https://www.amazon.com/gp/product/B013G4EAEI/), or 
-  * A USB A Add-on Board if you want to plug your Pi into your Tesla like a USB drive instead of using a cable. [Amazon](https://www.amazon.com/gp/product/B07BK2BR6C/), or
-  * A PCB kit if you want the lowest profile possible and you're able to solder. [Sparkfun](https://www.sparkfun.com/products/14526)
+## Recommended Hardware
 
-Optional:
-* A case. The "Official" case: [Adafruit](https://www.adafruit.com/product/3446) or [Amazon](https://www.amazon.com/gp/product/B06Y593MHV). There are many others to choose from. Note that the official case won't work with the USB A Add-on board or the PCB kit.
-* USB Splitter if you don't want to lose a front USB port. [The Onvian Splitter](https://www.amazon.com/gp/product/B01KX4TKH6) has been reported working by multiple people on reddit.
+- Raspberry Pi Zero 2 W.
+- High endurance microSD card, 128 GB or 256 GB.
+- A known-good data-capable USB cable.
+- Optional second USB power cable if the car data port does not power the Pi reliably.
+- A Windows/macOS/Linux machine that stays on and hosts the SMB archive/media share.
 
-### Software
-Download: [Raspbian Stretch Lite](https://www.raspberrypi.org/downloads/raspbian/)
+Important: on a Pi Zero / Zero 2 W, the data cable must go into the Pi port labeled `USB`, not `PWR IN`. If the Pi is powered through `PWR IN`, it may boot and join Wi-Fi, but the car will not see any USB drives.
 
-Download and install: [Etcher](http://etcher.io)
- 
-## Set up the Raspberry Pi
-There are four phases to setting up the Pi:
-1. Get the OS onto the micro sd card.
-1. Get a shell on the Pi.
-1. Set up the archive for dashcam clips.
-1. Set up the USB storage functionality.
+## Drive Layout
 
-There is a streamlined process for setting up the Pi which can currently be used if you plan to use Windows file shares, MacOS Sharing, or Samba on Linux for your video archive. [Instructions](doc/OneStepSetup.md).
+This fork can expose up to three Tesla-visible drives:
 
-If you'd like to host the archive using another technology or would like to set the Pi up, yourself, continue these instructions. 
+| Drive label | Backing file | Purpose |
+| --- | --- | --- |
+| `TESLADRIVE` | `cam_disk.bin` | TeslaCam dashcam storage |
+| `TeslaExtras` | `sounds_disk.bin` | Light shows, lock chime, wraps, license plate art, Boombox |
+| `TeslaMedia` | `music_disk.bin` | Music library |
 
-### Get the OS onto the MicroSD card
-[These instructions](https://www.raspberrypi.org/documentation/installation/installing-images/README.md) tell you how to get Raspbian onto your MicroSD card. Basically:
-1. Connect your SD card to your computer.
-2. Use Etcher to write the zip file you downloaded to the SD card.
-   > Note: you don't need to uncompress the zip file you downloaded.
+These are not physical partitions on the SD card. They are large FAT32 backing files stored on the Pi and exposed to the Tesla through USB gadget mode.
 
-### Get a shell on the Pi
-Follow the instructions corresponding to the OS you used to flash the OS onto the MicroSD card:
-* Windows: [Instructions](doc/GetShellWithoutMonitorOnWindows.md).
-* MacOS or Linux: [Instructions](doc/GetShellWithoutMonitorOnLinux.md).
+## Archive Share Layout
 
-Whichever instructions you followed above will leave you in a command shell on the Pi. Use this shell for the rest of the steps in these instructions.
+The archive server/share should contain a layout like this:
 
-### Become root on the Pi 
-
-First you need to get into a root shell on the Pi:
-```
-sudo -i
-```
-
-You'll stay in this root shell until you run the "halt" command in the "Set up USB storage functionality" below.  
-
-### Set up the archive for dashcam clips
-Follow the instructions corresponding to the technology you'd like to use to host the archive for your dashcam clips. You must choose just one of these technologies; don't follow more than one of these sets of instructions:
-* Windows file share, MacOS Sharing, or Samba on Linux: [Instructions](doc/SetupShare.md).
-* SFTP/rsync: [Instructions](doc/SetupRSync.md)
-* **Experimental:** Google Drive, Amazon S3, DropBox, Microsoft OneDrive: [Instructions](doc/SetupRClone.md)
-
-### Optional: Allocate SD Card Storage
-Indicate how much, as a percentage, of the drive you want to allocate to recording dashcam footage by running this command:
-
-```
- export campercent=<number>
+```text
+TeslaUSB/
+  TeslaCamArchive/
+    RecentClips/
+    SavedClips/
+    SentryClips/
+    Photobooth/
+    EncryptedClips/
+  TeslaUSB-Media/
+    TeslaExtras/
+      LicensePlate/
+        LicensePlate.png
+      LightShow/
+        Example.fseq
+        Example.mp3
+      Wraps/
+        Example.png
+      Boombox/
+      LockChime.wav
+    TeslaMedia/
+      Music/
+        Song.flac
+  TeslaUSB-Status/
+    status.txt
+    media-sync-report.txt
+    media-warnings.txt
 ```
 
-For example, using `export campercent=100` would allocate 100% of the space to recording footage from your car and would not create a separate music partition. `export campercent=50` would allocate half of the space for a dashcam footage drive and allocates the other half to for a music storage drive. If you don't set `campercent`, the script will allocate 90% of the total space to the dashcam by default.
+### TeslaExtras
 
-### Optional: Configure push notification via Pushover
-If you'd like to receive a text message when your Pi finishes archiving clips follow these [Instructions](doc/ConfigureNotificationsForArchive.md).
+`TeslaExtras` is intended for files that are not normal music:
 
-### Optional: Sync music and Tesla extras
-If you want to manage media files on your archive server and have the Pi copy
-them to Tesla-visible media drives, set `campercent` below `100` and follow
-these [Instructions](doc/SetupMediaSync.md). For a separate extras drive for
-light shows, lock chimes, wraps, and license plate art, also set
-`soundspercent`.
+- `LightShow/` for `.fseq` files and matching `.mp3` or `.wav` audio.
+- `LockChime.wav` at the root of `TeslaExtras`.
+- `Wraps/` for wrap images.
+- `LicensePlate/LicensePlate.png`.
+- `Boombox/` for Boombox files if used.
 
-### Optional: Configure a hostname
-The default network hostname for the Pi will become `teslausb`.  If you want to have more than one TeslaUSB devices on your network (for example you have more than one Tesla in your houseold), then you can specify an alternate hostname for the Pi by running this command:
+Legacy layouts are still tolerated. If the sync source has `LightShow` or `SOUNDS_LS` directly under the media folder, the sync script can fall back to those.
 
+### TeslaMedia
+
+Music belongs under:
+
+```text
+TeslaUSB-Media/TeslaMedia/Music/
 ```
- export TESLAUSB_HOSTNAME=<new hostname>
+
+FLAC files work well for lossless storage. Keep filenames simple where possible. FAT32 can reject some characters, especially smart quotes and other special Unicode punctuation.
+
+## Key Improvements In This Fork
+
+### Media Sync
+
+The original project could store music, but this fork adds server-managed media sync. You can update music, light shows, wraps, and lock chimes on the archive share from another device, then the Pi copies those files onto the Tesla-visible USB drives during sync.
+
+### Separate Extras Drive
+
+This fork supports a dedicated extras drive using `soundspercent`, which keeps TeslaCam, music, and extras organized separately.
+
+### Folder-Based TeslaCam Archive
+
+Clips are archived into matching folders instead of one mixed directory:
+
+- `RecentClips`
+- `SavedClips`
+- `SentryClips`
+- `Photobooth`
+- `EncryptedClips`
+
+### Pushover Notifications
+
+When configured, the Pi can send notifications for:
+
+- Archive complete.
+- Archive failed.
+- Media sync failed.
+- Media warnings.
+- Sync complete with media sync status.
+
+### Media Reports
+
+The Pi writes report files to `TeslaUSB-Status` on the archive share:
+
+- `status.txt`
+- `media-sync-report.txt`
+- `media-warnings.txt`
+
+These are useful when checking whether music, light shows, and lock chimes synced correctly.
+
+### Configurable Archive Delay
+
+This fork supports:
+
+```sh
+ARCHIVE_START_DELAY_SECONDS=300
 ```
 
-For example, you could use `export TESLAUSB_HOSTNAME=teslausb-ModelX`
+That waits 5 minutes before the Pi disconnects the Tesla-visible USB drives and starts archiving. This helps avoid grabbing the drive immediately while the car is still awake or writing clips.
 
-Make sure that whatever you speicfy for the new hostname is compliant with the rules for DNS hostnames; for example underscore (_) is not allowed, but dash (-) is allowed.  Full rules are in RFC 1178 at https://tools.ietf.org/html/rfc1178
+### Newer Raspberry Pi OS Compatibility
 
-### Set up the USB storage functionality
-1. Run these commands:
-    ```
-    wget https://raw.githubusercontent.com/cimryan/teslausb/master/setup/pi/setup-teslausb
-    chmod +x setup-teslausb
-    ./setup-teslausb
-    ```
-1. Run this command:
-    ```
-    halt
-    ```
-1. Disconnect the Pi from the computer.
+This fork includes setup fixes for newer Raspberry Pi OS images:
 
-On the next boot, the Pi hostname will become `teslausb`, so future `ssh` sessions will be `ssh pi@teslausb.local`.   If you specified your own hostname, be sure to use that name (for example `ssh pi@teslausb-ModelX.local`)
+- Modern `/boot/firmware` boot paths.
+- Missing legacy `/etc/rc.local`.
+- Missing legacy setup LED/progress helpers.
+- Rerunning setup without duplicating entries.
+- Backing files stored on the root filesystem when a separate backing partition is not used.
+- Branch names encoded correctly for raw GitHub script downloads.
 
-Your Pi is now ready to be plugged into your Tesla. If you want to add music to the Pi, follow the instructions in the next section.
+## Example Setup Variables
 
-## Optional: Add music to the Pi
-> Note: If you set `campercent` to `100` then skip this step.
+For a three-drive setup:
 
-Connect the Pi to a computer. If you're using a cable be sure to use the port labeled "USB" on the circuitboard. 
-1. Wait for the Pi to show up on the computer as a USB drive.
-1. Copy any music you'd like to the drive labeled MUSIC.
-1. Eject the drives.
-1. Unplug the Pi from the computer.
-1. Plug the Pi into your Tesla.
+```sh
+export ARCHIVE_SYSTEM=cifs
+export archiveserver=192.168.68.69
+export sharename=TeslaUSB
+export shareuser=teslausb
+export sharepassword='your-password'
 
-## Optional: Making changes to the system after setup
-The setup process configures the Pi with read-only file systems for the operating system but with read-write
-access through the USB interface. This means that you'll be able to record dashcam video and add and remove
-music files but you won't be able to make changes to files on / or on /boot. This is to protect against
-corruption of the operating system when the Tesla cuts power to the Pi.
+export campercent=60
+export soundspercent=15
 
-To make changes to the system partitions:
+export CAM_LABEL=TESLADRIVE
+export SOUNDS_LABEL=TeslaExtras
+export MUSIC_LABEL=TeslaMedia
+
+export ARCHIVE_CLIP_FOLDERS="SavedClips SentryClips RecentClips Photobooth EncryptedClips"
+
+export MEDIA_SYNC_ENABLED=true
+export MEDIA_SYNC_SOURCE_DIR=TeslaUSB-Media
+export MEDIA_SYNC_SOUNDS_SOURCE_DIR=TeslaExtras
+export MEDIA_SYNC_MUSIC_SOURCE_DIR=TeslaMedia
+
+export pushover_enabled=true
+export pushover_user_key='your-user-key'
+export pushover_app_key='your-app-key'
 ```
-ssh pi@teslausb.
-sudo -i
-/root/bin/remountfs_rw
+
+The live 5-minute delay is configured through systemd:
+
+```ini
+[Service]
+Environment=ARCHIVE_START_DELAY_SECONDS=300
 ```
-Then make whatever changes you need to. The next time the system boots the partitions will once again be read-only.
 
-## Meta
-This repo contains steps and scripts originally from [this thread on Reddit]( https://www.reddit.com/r/teslamotors/comments/9m9gyk/build_a_smart_usb_drive_for_your_tesla_dash_cam/)
+## Installation Overview
 
-Many people in that thread suggested that the scripts be hosted on Github but the author didn't seem interested in making that happen. I've hosted the scripts here with his/her permission.
+Flash Raspberry Pi OS Lite to the SD card, enable SSH, configure Wi-Fi, then run the TeslaUSB setup script from this fork:
+
+```sh
+wget https://raw.githubusercontent.com/etbork/teslausb-tesla-extras/codex/teslausb-tesla-extras/setup/pi/setup-teslausb
+chmod +x setup-teslausb
+sudo ./setup-teslausb
+```
+
+If the repository is private, fresh installs need a different download method, such as cloning with GitHub authentication or copying the setup script locally.
+
+## Operational Notes
+
+- The Pi must be on Wi-Fi to reach the SMB archive share.
+- The archive cycle disconnects the USB drives from the Tesla while it mounts the backing files internally.
+- If the Tesla is still actively writing, archiving too soon can look strange in the car UI. Use `ARCHIVE_START_DELAY_SECONDS` to add a buffer.
+- TeslaUSB expects a reachable/unreachable archive cycle. In the original design, the car leaves home Wi-Fi, then returns. If the car stays home and Sentry keeps it awake, the Pi may stay powered and reachable for long periods.
+- Some Tesla USB ports are power-only. The Pi can be online but invisible to the car if the data cable is in the wrong port or plugged into the Pi's `PWR IN` port.
+- On the Pi Zero 2 W, the car data cable must use the Pi's `USB` port.
+
+## Troubleshooting
+
+### The Pi is online but the car sees no USB drives
+
+Check:
+
+- Cable is data-capable.
+- Cable is plugged into the Pi port labeled `USB`.
+- Car port supports USB data.
+- `dtoverlay=dwc2,dr_mode=peripheral` is present in `/boot/firmware/config.txt`.
+- `g_mass_storage` is loaded.
+
+The USB controller state can be checked with:
+
+```sh
+cat /sys/class/udc/*/state
+```
+
+If it says `not attached`, the Pi does not detect the car as a USB host.
+
+### Music or media sync fails
+
+Check `TeslaUSB-Status/media-sync-report.txt` and `TeslaUSB-Status/media-warnings.txt` on the archive share.
+
+FAT32 can reject some filenames. Avoid smart quotes and unusual punctuation in music filenames.
+
+### Lock chime warning
+
+Place the file here:
+
+```text
+TeslaUSB-Media/TeslaExtras/LockChime.wav
+```
+
+The filename must be exactly `LockChime.wav`.
+
+### Slow archiving
+
+Archiving can be slow because data travels through several layers:
+
+```text
+Tesla writes to USB gadget -> Pi SD backing file -> Pi mounts FAT image -> Wi-Fi -> SMB share
+```
+
+The Pi Zero 2 W is small and Wi-Fi/SMB/FAT image operations can be slow, especially for video clips.
+
+## Security Notes
+
+Do not commit local configuration files with:
+
+- Wi-Fi credentials.
+- SMB passwords.
+- Pushover tokens.
+- Private GitHub tokens.
+
+Use a dedicated archive-share user with access only to the TeslaUSB share.
+
+## License And Upstream
+
+This fork is based on [cimryan/teslausb](https://github.com/cimryan/teslausb). See the upstream project for original history, design, and license context.
