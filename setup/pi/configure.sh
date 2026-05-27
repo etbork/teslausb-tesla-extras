@@ -123,6 +123,7 @@ function install_archive_scripts () {
     get_script $install_path check-free-space.sh run
     get_script $install_path remountfs_rw run
     get_script $install_path lookup-ip-address.sh run
+    get_script /usr/local/bin teslausb-sync-now run
 
     echo "Installing archive module scripts"
     get_script $install_path verify-archive-configuration.sh $archive_module

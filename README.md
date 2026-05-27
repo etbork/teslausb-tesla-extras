@@ -35,6 +35,8 @@ The original project already handled the hard part: using Linux USB gadget mode 
 
 Important: on a Pi Zero / Zero 2 W, the data cable must go into the Pi port labeled `USB`, not `PWR IN`. If the Pi is powered through `PWR IN`, it may boot and join Wi-Fi, but the car will not see any USB drives.
 
+Also recommended: reserve the Pi's IP address in your router/DHCP server. A router-side DHCP reservation is preferred over hard-coding a static IP on the Pi because it keeps the Pi portable while still giving Apple Shortcuts, Home Assistant, and SSH automations a stable target.
+
 ## Drive Layout
 
 This fork can expose up to three Tesla-visible drives:
@@ -199,6 +201,12 @@ The live 5-minute delay is configured through systemd:
 Environment=ARCHIVE_START_DELAY_SECONDS=300
 ```
 
+Manual sync can be triggered with:
+
+```sh
+sudo teslausb-sync-now
+```
+
 ## Installation Overview
 
 Flash Raspberry Pi OS Lite to the SD card, enable SSH, configure Wi-Fi, then run the TeslaUSB setup script from this fork:
@@ -211,9 +219,35 @@ sudo ./setup-teslausb
 
 If the repository is private, fresh installs need a different download method, such as cloning with GitHub authentication or copying the setup script locally.
 
+## Apple Shortcut Manual Sync
+
+This fork installs a helper command for manual sync requests:
+
+```sh
+sudo teslausb-sync-now
+```
+
+That command creates the TeslaUSB archive trigger and restarts the archive loop. It still respects `ARCHIVE_START_DELAY_SECONDS`, so with a 300-second delay the Pi waits 5 minutes before disconnecting the Tesla-visible drives and archiving.
+
+To trigger it from an iPhone:
+
+1. Create a Shortcut.
+2. Add **Run Script Over SSH**.
+3. Host: the Pi's reserved IP address, for example `192.168.68.51`.
+4. User: `pi`.
+5. Authentication: your Pi password or SSH key.
+6. Script:
+
+```sh
+sudo teslausb-sync-now
+```
+
+Name the Shortcut something like `Sync TeslaUSB`, then run it from the Shortcuts app, a Home Screen icon, or Siri.
+
 ## Operational Notes
 
 - The Pi must be on Wi-Fi to reach the SMB archive share.
+- Reserve the Pi's IP address in the router so phone shortcuts and automations can reliably reach it.
 - The archive cycle disconnects the USB drives from the Tesla while it mounts the backing files internally.
 - If the Tesla is still actively writing, archiving too soon can look strange in the car UI. Use `ARCHIVE_START_DELAY_SECONDS` to add a buffer.
 - TeslaUSB expects a reachable/unreachable archive cycle. In the original design, the car leaves home Wi-Fi, then returns. If the car stays home and Sentry keeps it awake, the Pi may stay powered and reachable for long periods.

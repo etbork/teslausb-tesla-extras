@@ -1,0 +1,24 @@
+#!/bin/bash
+set -euo pipefail
+
+SERVICE_NAME=teslausb-archive.service
+LOG_FILE=/mutable/archiveloop.log
+
+function log () {
+  if [ -d "$( dirname "$LOG_FILE" )" ]
+  then
+    {
+      date
+      echo "$1"
+    } >> "$LOG_FILE"
+  else
+    echo "$1"
+  fi
+}
+
+log "Manual sync requested."
+touch /tmp/archive_is_reachable
+systemctl restart "$SERVICE_NAME"
+log "Manual sync request sent to $SERVICE_NAME."
+
+echo "TeslaUSB sync requested. The archive loop has been restarted."
