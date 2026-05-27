@@ -133,8 +133,21 @@ function copy_path_if_present () {
   fi
 
   log "Syncing $source_path to $destination_path..."
-  rm -rf "$destination_path"
-  cp -a "$source_path" "$destination_path"
+
+  if command -v rsync > /dev/null
+  then
+    if [ -d "$source_path" ]
+    then
+      mkdir -p "$destination_path"
+      rsync -a --delete --modify-window=2 "$source_path"/ "$destination_path"/
+    else
+      mkdir -p "$( dirname "$destination_path" )"
+      rsync -a --modify-window=2 "$source_path" "$destination_path"
+    fi
+  else
+    rm -rf "$destination_path"
+    cp -a "$source_path" "$destination_path"
+  fi
 }
 
 function sync_sounds_drive () {

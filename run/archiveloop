@@ -324,6 +324,7 @@ export -f ensure_mountpoint_is_mounted
 export -f retry
 export -f ensure_mountpoint_is_mounted_with_retry
 export -f log
+export -f unmount_mount_point
 export -f unmount_music_file
 export -f unmount_sounds_file
 export -f ensure_sounds_file_is_mounted
