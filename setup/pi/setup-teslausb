@@ -62,6 +62,11 @@ function headless_setup_mark_setup_success () {
 function headless_setup_progress_flash () {
   if [ $USE_LED_FOR_SETUP_PROGRESS = "true" ] && [ $HEADLESS_SETUP = "true" ]
   then
+    if [ ! -x /etc/stage_flash ]
+    then
+      setup_progress "Skipping setup progress flash; /etc/stage_flash is not available."
+      return
+    fi
     /etc/stage_flash $1
   fi
 }
