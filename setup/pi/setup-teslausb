@@ -70,6 +70,11 @@ function setup_led_off () {
 
   if [ $USE_LED_FOR_SETUP_PROGRESS = "true" ] && [ $HEADLESS_SETUP = "true" ]
   then
+    if [ ! -e /sys/class/leds/led0/trigger ] || [ ! -e /sys/class/leds/led0/brightness ]
+    then
+      setup_progress "Skipping setup LED control; /sys/class/leds/led0 is not available."
+      return
+    fi
     echo "none" | sudo tee /sys/class/leds/led0/trigger > /dev/null
     echo 1 | sudo tee /sys/class/leds/led0/brightness > /dev/null
   fi
@@ -79,6 +84,11 @@ function setup_led_on () {
 
   if [ $USE_LED_FOR_SETUP_PROGRESS = "true" ] && [ $HEADLESS_SETUP = "true" ]
   then
+    if [ ! -e /sys/class/leds/led0/brightness ]
+    then
+      setup_progress "Skipping setup LED control; /sys/class/leds/led0 is not available."
+      return
+    fi
     echo 0 | sudo tee /sys/class/leds/led0/brightness > /dev/null
   fi
 }
