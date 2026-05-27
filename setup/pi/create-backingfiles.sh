@@ -3,6 +3,7 @@
 CAM_PERCENT="$1"
 BACKINGFILES_MOUNTPOINT="$2"
 SOUNDS_PERCENT="${soundspercent:-0}"
+BACKINGFILES_RESERVE_MB="${BACKINGFILES_RESERVE_MB:-2048}"
 
 CAM_LABEL="${CAM_LABEL:-CAM}"
 SOUNDS_LABEL="${SOUNDS_LABEL:-TeslaExtras}"
@@ -22,7 +23,7 @@ function add_drive () {
 
   local mountpoint=/mnt/"$name"
 
-  mkdir "$mountpoint"
+  mkdir -p "$mountpoint"
   echo "$filename $mountpoint vfat noauto,users,umask=000 0 0" >> /etc/fstab
 }
 
@@ -33,6 +34,13 @@ function create_teslacam_directory () {
 }
 
 FREE_1K_BLOCKS="$(df --output=avail --block-size=1K $BACKINGFILES_MOUNTPOINT/ | tail -n 1)"
+RESERVED_1K_BLOCKS="$(( BACKINGFILES_RESERVE_MB * 1024 ))"
+if [ "$FREE_1K_BLOCKS" -le "$RESERVED_1K_BLOCKS" ]
+then
+  echo "STOP: Not enough free space to reserve ${BACKINGFILES_RESERVE_MB}MB for the operating system."
+  exit 1
+fi
+FREE_1K_BLOCKS="$(( FREE_1K_BLOCKS - RESERVED_1K_BLOCKS ))"
 
 CAM_DISK_SIZE="$(( $FREE_1K_BLOCKS * $CAM_PERCENT / 100 ))"
 CAM_DISK_FILE_NAME="$BACKINGFILES_MOUNTPOINT/cam_disk.bin"

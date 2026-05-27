@@ -8,6 +8,8 @@ USE_LED_FOR_SETUP_PROGRESS=true
 CONFIGURE_ARCHIVING=${CONFIGURE_ARCHIVING:-true}
 UPGRADE_PACKAGES=${UPGRADE_PACKAGES:-true}
 TESLAUSB_HOSTNAME=${TESLAUSB_HOSTNAME:-teslausb}
+USE_BACKINGFILES_PARTITION=${USE_BACKINGFILES_PARTITION:-true}
+MAKE_ROOT_FS_READONLY=${MAKE_ROOT_FS_READONLY:-true}
 export campercent=${campercent:-90}
 
 function setup_progress () {
@@ -181,13 +183,16 @@ function create_usb_drive_backing_files () {
     mkdir "$MUTABLE_MOUNTPOINT"
   fi
   
-  if [ ! -e /dev/mmcblk0p3 ]
+  if [ "$USE_BACKINGFILES_PARTITION" = true ] && [ ! -e /dev/mmcblk0p3 ]
   then
     setup_progress "Starting to create backing files partition..."
     /tmp/create-backingfiles-partition.sh "$BACKINGFILES_MOUNTPOINT" "$MUTABLE_MOUNTPOINT"
+  elif [ "$USE_BACKINGFILES_PARTITION" != true ]
+  then
+    setup_progress "Skipping backing files partition creation."
   fi
   
-  if ! findmnt --mountpoint $BACKINGFILES_MOUNTPOINT
+  if [ "$USE_BACKINGFILES_PARTITION" = true ] && ! findmnt --mountpoint $BACKINGFILES_MOUNTPOINT
   then
     setup_progress "Mounting the partition for the backing files..."
     mount $BACKINGFILES_MOUNTPOINT
@@ -220,7 +225,12 @@ function configure_hostname () {
 }
 
 function make_root_fs_readonly () {
-  /tmp/make-root-fs-readonly.sh
+  if [ "$MAKE_ROOT_FS_READONLY" = true ]
+  then
+    /tmp/make-root-fs-readonly.sh
+  else
+    setup_progress "Skipping read-only root filesystem configuration."
+  fi
 }
 
 function update_package_index () {
