@@ -8,6 +8,7 @@ export CAM_MOUNT=/mnt/cam
 export SOUNDS_MOUNT=/mnt/sounds
 export MUSIC_MOUNT=/mnt/music
 export ARCHIVE_MOUNT=/mnt/archive
+ARCHIVE_START_DELAY_SECONDS=${ARCHIVE_START_DELAY_SECONDS:-0}
 
 function log () {
   echo "$( date )" >> "$LOG_FILE"
@@ -202,6 +203,25 @@ function wait_for_archive_to_be_unreachable () {
   done
 }
 
+function delay_before_archive () {
+  if [ "$ARCHIVE_START_DELAY_SECONDS" -le 0 ]
+  then
+    return 0
+  fi
+
+  log "Waiting $ARCHIVE_START_DELAY_SECONDS seconds before archiving..."
+  /bin/sleep "$ARCHIVE_START_DELAY_SECONDS"
+
+  if ! archive_is_reachable
+  then
+    log "Archive became unreachable during archive delay; skipping this archive cycle."
+    return 1
+  fi
+
+  log "Archive delay finished."
+  return 0
+}
+
 function mount_and_fix_errors_in_cam_file () {
   ensure_cam_file_is_mounted
   fix_errors_in_cam_file
@@ -338,7 +358,10 @@ then
   mount_and_fix_errors_in_sounds_file
   mount_and_fix_errors_in_music_file
 
-  archive_clips
+  if delay_before_archive
+  then
+    archive_clips
+  fi
 
   wait_for_archive_to_be_unreachable
 else
@@ -351,7 +374,10 @@ while [ true ]
 do
   wait_for_archive_to_be_reachable
 
-  archive_clips
+  if delay_before_archive
+  then
+    archive_clips
+  fi
 
   truncate_log
   
