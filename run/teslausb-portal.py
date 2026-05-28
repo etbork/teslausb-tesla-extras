@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 import html
 import json
 import mimetypes
@@ -7,17 +8,23 @@ import posixpath
 import re
 import shutil
 import subprocess
+import threading
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-
 SESSION_HELPER = os.environ.get("PORTAL_SESSION_HELPER", "/usr/local/bin/teslausb-portal-session")
 HOST = os.environ.get("PORTAL_BIND_HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORTAL_PORT", "80"))
 UPLOADS_ENABLED = os.environ.get("PORTAL_UPLOADS_ENABLED", "true").lower() == "true"
+DELETES_ENABLED = os.environ.get("PORTAL_DELETES_ENABLED", "false").lower() == "true"
 LOG_FILES = ["/mutable/portal.log"]
+SESSION_TIMEOUT_SECONDS = int(os.environ.get("PORTAL_SESSION_TIMEOUT_SECONDS", "300"))
+SESSION_EXTEND_SECONDS = int(os.environ.get("PORTAL_SESSION_EXTEND_SECONDS", str(SESSION_TIMEOUT_SECONDS)))
+SESSION_DEADLINE = 0.0
+SESSION_DEADLINE_LOCK = threading.Lock()
 
 DRIVES = {
     "cam": {"label": "TESLADRIVE", "title": "Dash cam", "root": Path("/mnt/cam"), "home_path": "TeslaCam"},
@@ -80,7 +87,7 @@ def validate_filename(name, allowed_extensions, fixed_name=None):
     if fixed_name:
         base = fixed_name
     if not SAFE_NAME.match(base):
-        raise ValueError("Filename uses unsupported characters.")
+        raise ValueError("Filename uses unsupported characters. Avoid smart quotes and special punctuation.")
     suffix = Path(base).suffix.lower()
     if suffix not in allowed_extensions:
         raise ValueError(f"Unsupported file type: {suffix or '(none)'}")
@@ -96,12 +103,10 @@ def parse_multipart(headers, stream):
     length = int(headers.get("Content-Length", "0"))
     if length <= 0:
         raise ValueError("Upload request is empty.")
-
     body = stream.read(length)
     marker = b"--" + boundary
     fields = {}
     files = {}
-
     for part in body.split(marker):
         part = part.strip(b"\r\n")
         if not part or part == b"--":
@@ -157,13 +162,48 @@ def count_files(root):
     return total
 
 
+def session_deadline():
+    with SESSION_DEADLINE_LOCK:
+        return SESSION_DEADLINE
+
+
+def set_session_deadline(seconds=None):
+    global SESSION_DEADLINE
+    with SESSION_DEADLINE_LOCK:
+        SESSION_DEADLINE = time.time() + (seconds or SESSION_TIMEOUT_SECONDS)
+        return SESSION_DEADLINE
+
+
+def clear_session_deadline():
+    global SESSION_DEADLINE
+    with SESSION_DEADLINE_LOCK:
+        SESSION_DEADLINE = 0.0
+
+
+def session_watchdog():
+    while True:
+        time.sleep(5)
+        deadline = session_deadline()
+        if not deadline or time.time() < deadline:
+            continue
+        try:
+            status = json.loads(run_helper("status"))
+            if status.get("session_active"):
+                run_helper("stop")
+        except Exception:
+            pass
+        finally:
+            clear_session_deadline()
+
+
 def get_status():
     try:
         raw = run_helper("status")
         status = json.loads(raw)
     except Exception as exc:
         status = {"session_active": False, "usb": "unknown", "mounts": {}, "error": str(exc)}
-
+    if not status.get("session_active"):
+        clear_session_deadline()
     drives = {}
     for key, info in DRIVES.items():
         root = info["root"]
@@ -188,6 +228,9 @@ def get_status():
         }
     status["drives"] = drives
     status["uploads_enabled"] = UPLOADS_ENABLED
+    status["deletes_enabled"] = DELETES_ENABLED
+    status["session_expires_at"] = int(session_deadline()) if status.get("session_active") and session_deadline() else None
+    status["session_timeout_seconds"] = SESSION_TIMEOUT_SECONDS
     status["upload_targets"] = {
         key: {
             "label": value["label"],
@@ -211,7 +254,6 @@ def list_directory(drive_key, rel):
         rel = ""
     if not target.is_dir():
         raise ValueError("Browse path is not a directory.")
-
     items = []
     for child in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
         try:
@@ -232,8 +274,27 @@ def list_directory(drive_key, rel):
     return {"drive": drive_key, "path": rel, "parent": parent, "items": items}
 
 
+def delete_path(drive_key, rel):
+    if not DELETES_ENABLED:
+        raise ValueError("Deletes are disabled.")
+    if drive_key not in DRIVES:
+        raise ValueError("Unknown drive.")
+    root = DRIVES[drive_key]["root"]
+    target, rel = safe_join(root, rel)
+    if target == root.resolve():
+        raise ValueError("Refusing to delete the drive root.")
+    if not target.exists():
+        raise ValueError("Path does not exist.")
+    if target.is_dir():
+        shutil.rmtree(target)
+    else:
+        target.unlink()
+    os.sync()
+    return {"ok": True, "drive": drive_key, "path": rel}
+
+
 class PortalHandler(BaseHTTPRequestHandler):
-    server_version = "TeslaUSBPortal/2.0"
+    server_version = "TeslaUSBPortal/2.1"
 
     def send_text(self, body, status=HTTPStatus.OK, content_type="text/html; charset=utf-8"):
         data = body.encode("utf-8")
@@ -273,12 +334,22 @@ class PortalHandler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/session/start":
                 run_helper("start")
+                set_session_deadline()
+                self.send_json(get_status())
+            elif parsed.path == "/session/extend":
+                status = get_status()
+                if not status.get("session_active"):
+                    raise ValueError("Start a transfer session before extending it.")
+                set_session_deadline(SESSION_EXTEND_SECONDS)
                 self.send_json(get_status())
             elif parsed.path == "/session/stop":
                 run_helper("stop")
+                clear_session_deadline()
                 self.send_json(get_status())
             elif parsed.path == "/upload":
                 self.handle_upload()
+            elif parsed.path == "/api/delete":
+                self.handle_delete()
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
         except Exception as exc:
@@ -315,7 +386,6 @@ class PortalHandler(BaseHTTPRequestHandler):
         file_item = files.get("file")
         if file_item is None or not file_item.get("filename"):
             raise ValueError("No file uploaded.")
-
         target_info = UPLOAD_TARGETS[target_key]
         drive = DRIVES[target_info["drive"]]
         if not status["drives"][target_info["drive"]]["mounted"]:
@@ -334,419 +404,976 @@ class PortalHandler(BaseHTTPRequestHandler):
             "filename": filename,
         })
 
+    def handle_delete(self):
+        if not DELETES_ENABLED:
+            raise ValueError("Deletes are disabled.")
+        status = get_status()
+        if not status["session_active"]:
+            raise ValueError("Start a transfer session before deleting.")
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        body = self.rfile.read(length) if length else b""
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            raise ValueError("Delete request body must be JSON.")
+        drive_key = payload.get("drive", "")
+        rel = payload.get("path", "")
+        if not status["drives"].get(drive_key, {}).get("mounted"):
+            raise ValueError("Drive is not mounted.")
+        self.send_json(delete_path(drive_key, rel))
+
 
 APP_HTML = r"""<!doctype html>
 <html lang="en" data-page="home">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TeslaDrive</title>
-  <style>
-    :root {
-      --bg: #25231f;
-      --surface: #302e2a;
-      --surface-2: #3a3732;
-      --text: #f2f0ea;
-      --muted: #aaa49a;
-      --faint: #777168;
-      --hairline: #46423c;
-      --hairline-2: #5b554d;
-      --ok: #74d59a;
-      --warn: #e4b65e;
-      --error: #f07562;
-      --accent: #f2f0ea;
-      --on-accent: #25231f;
-      --radius: 8px;
-      --radius-sm: 6px;
-      --pad: 22px;
-      --gap: 16px;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-    * { box-sizing: border-box; }
-    html, body { min-height: 100%; }
-    body { margin: 0; background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.45; -webkit-font-smoothing: antialiased; }
-    button, input, select { font: inherit; }
-    button { color: inherit; cursor: pointer; }
-    a { color: inherit; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-feature-settings: "tnum", "zero"; }
-    .app { min-height: 100vh; display: grid; grid-template-rows: auto 1fr; }
-    .topbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 16px 40px; border-bottom: 1px solid var(--hairline); background: var(--bg); position: sticky; top: 0; z-index: 5; }
-    .brand { display: inline-flex; align-items: baseline; gap: 10px; }
-    .brand-name { font-size: 20px; font-weight: 650; letter-spacing: -0.01em; }
-    .brand-sub { color: var(--faint); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; }
-    .topbar-r { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
-    .status-chip { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--hairline); border-radius: 999px; padding: 7px 11px; color: var(--muted); background: rgba(255,255,255,0.02); font-size: 12px; }
-    .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); display: inline-block; }
-    .dot.ok { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 18%, transparent); }
-    .dot.warn { background: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 18%, transparent); }
-    .mn { width: 100%; max-width: 1280px; margin: 0 auto; padding: 34px 40px 72px; }
-    .page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 18px; margin-bottom: 24px; flex-wrap: wrap; }
-    .page-title { margin: 0; font-size: clamp(36px, 6vw, 62px); line-height: 0.95; font-weight: 520; letter-spacing: 0; }
-    .page-note { color: var(--muted); margin: 10px 0 0; max-width: 620px; }
-    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border-radius: var(--radius-sm); border: 1px solid var(--hairline-2); background: transparent; color: var(--text); min-height: 38px; padding: 8px 14px; font-weight: 620; white-space: nowrap; }
-    .btn:hover { border-color: var(--text); background: var(--surface-2); }
-    .btn-solid { background: var(--text); color: var(--bg); border-color: var(--text); }
-    .btn-danger { color: var(--error); border-color: color-mix(in srgb, var(--error) 45%, transparent); }
-    .btn-sm { min-height: 30px; padding: 5px 10px; font-size: 12px; }
-    .icon-btn { width: 34px; height: 34px; display: inline-grid; place-items: center; border: 1px solid var(--hairline); background: transparent; border-radius: 999px; color: var(--muted); }
-    .icon-btn:hover { color: var(--text); border-color: var(--text); background: var(--surface); }
-    .card { background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--radius); }
-    .card-pad { padding: var(--pad); }
-    .home-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--gap); }
-    .home-tile { text-align: left; min-height: 260px; border-radius: var(--radius); border: 1px solid var(--hairline); background: var(--surface); color: var(--text); padding: 22px; display: flex; flex-direction: column; justify-content: space-between; transition: transform 120ms, border-color 120ms, background 120ms; }
-    .home-tile:hover { transform: translateY(-2px); border-color: var(--text); background: var(--surface-2); }
-    .home-icon { width: 44px; height: 44px; display: grid; place-items: center; border: 1px solid var(--hairline-2); border-radius: 8px; color: var(--muted); }
-    .home-num { font-size: 58px; line-height: 0.95; font-weight: 540; margin-top: auto; }
-    .home-num-label { color: var(--faint); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; }
-    .home-label { font-size: 25px; font-weight: 560; margin-top: 16px; }
-    .meter { margin-top: 18px; }
-    .meter-track { height: 3px; border-radius: 999px; overflow: hidden; background: var(--surface-2); }
-    .meter-fill { height: 100%; background: var(--text); }
-    .meter-row { margin-top: 8px; display: flex; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 11px; }
-    .panel-grid { display: grid; grid-template-columns: 1fr 320px; gap: var(--gap); align-items: start; }
-    .folder-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
-    .tab { border: 1px solid var(--hairline); background: transparent; color: var(--muted); border-radius: 999px; padding: 8px 12px; }
-    .tab.on, .tab:hover { color: var(--text); border-color: var(--text); background: var(--surface); }
-    .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; color: var(--muted); }
-    .files { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
-    .file-card { text-align: left; border: 1px solid var(--hairline); background: var(--surface); color: var(--text); border-radius: var(--radius); padding: 14px; min-height: 136px; display: flex; flex-direction: column; gap: 10px; }
-    .file-card:hover { border-color: var(--text); background: var(--surface-2); }
-    .file-thumb { height: 64px; border-radius: 6px; border: 1px solid var(--hairline); display: grid; place-items: center; color: var(--faint); background: repeating-linear-gradient(45deg, rgba(255,255,255,0.03), rgba(255,255,255,0.03) 4px, transparent 4px, transparent 8px); }
-    .file-name { overflow-wrap: anywhere; font-weight: 620; }
-    .file-meta { margin-top: auto; color: var(--muted); font-size: 12px; display: flex; justify-content: space-between; gap: 10px; }
-    .file-list { width: 100%; border-collapse: collapse; }
-    .file-list th, .file-list td { border-bottom: 1px solid var(--hairline); padding: 11px 12px; text-align: left; }
-    .file-list th { color: var(--muted); font-size: 11px; letter-spacing: 0.10em; text-transform: uppercase; font-weight: 500; }
-    .file-list tr:hover td { background: rgba(255,255,255,0.025); }
-    .upload-card { padding: 16px; }
-    .upload-form { display: grid; gap: 12px; }
-    .upload-zone { border: 1px dashed var(--hairline-2); border-radius: var(--radius); padding: 18px; background: rgba(255,255,255,0.025); }
-    .upload-zone input, .upload-zone select { width: 100%; color: var(--text); background: var(--surface-2); border: 1px solid var(--hairline); border-radius: 6px; padding: 9px; }
-    .upload-zone label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
-    .section-title { color: var(--muted); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; margin: 0 0 12px; }
-    .kv { display: flex; justify-content: space-between; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--hairline); }
-    .kv:last-child { border-bottom: 0; }
-    .kv span:first-child { color: var(--muted); }
-    .log { white-space: pre-wrap; background: #171613; color: var(--muted); border: 1px solid var(--hairline); border-radius: 6px; padding: 12px; max-height: 260px; overflow: auto; }
-    .empty { border: 1px dashed var(--hairline); border-radius: var(--radius); padding: 34px; color: var(--muted); text-align: center; grid-column: 1 / -1; }
-    .hidden { display: none !important; }
-    .toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: var(--text); color: var(--bg); border-radius: 999px; padding: 10px 16px; font-weight: 650; z-index: 20; box-shadow: 0 12px 40px rgba(0,0,0,.28); }
-    svg { display: block; }
-    @media (max-width: 900px) {
-      .topbar { padding: 14px 18px; align-items: flex-start; }
-      .brand-sub { display: none; }
-      .mn { padding: 24px 18px 56px; }
-      .home-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .panel-grid { grid-template-columns: 1fr; }
-    }
-    @media (max-width: 560px) {
-      .topbar { display: grid; }
-      .topbar-r { justify-content: flex-start; }
-      .home-grid { grid-template-columns: 1fr; }
-      .home-tile { min-height: 190px; }
-      .files { grid-template-columns: 1fr; }
-      .file-list-wrap { overflow-x: auto; }
-      .page-head { align-items: flex-start; }
-    }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TeslaDrive</title>
+<style>
+  :root {
+    --bg: oklch(0.16 0.005 80);
+    --surface: oklch(0.20 0.005 80);
+    --surface-2: oklch(0.23 0.005 80);
+    --text: oklch(0.94 0.005 80);
+    --muted: oklch(0.66 0.005 80);
+    --faint: oklch(0.44 0.005 80);
+    --hairline: oklch(0.30 0.005 80);
+    --hairline-2: oklch(0.36 0.005 80);
+    --ok: oklch(0.78 0.09 145);
+    --warn: oklch(0.78 0.12 70);
+    --error: oklch(0.70 0.18 25);
+    --accent: oklch(0.94 0.005 80);
+    --on-accent: oklch(0.16 0.005 80);
+    --radius: 10px;
+    --radius-sm: 6px;
+    --pad: 22px;
+    --gap: 16px;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { min-height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.45; -webkit-font-smoothing: antialiased; }
+  button, input, select { font: inherit; }
+  button { color: inherit; cursor: pointer; }
+  a { color: inherit; text-decoration: none; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-feature-settings: "tnum", "zero"; }
+  .num-faint { color: var(--faint); }
+  .hidden { display: none !important; }
+
+  .app { min-height: 100vh; display: grid; grid-template-rows: auto 1fr; }
+
+  /* Top bar */
+  .topbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 16px 40px; border-bottom: 1px solid var(--hairline); background: var(--bg); position: sticky; top: 0; z-index: 5; min-height: 64px; }
+  .topbar-l { display: flex; align-items: center; gap: 14px; }
+  .brand-name { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+  .back-btn { display: inline-flex; align-items: center; gap: 8px; background: transparent; border: 1px solid var(--hairline-2); border-radius: 999px; padding: 8px 16px 8px 12px; color: var(--text); font-size: 13px; font-weight: 500; transition: background 120ms, border-color 120ms; }
+  .back-btn:hover { background: var(--surface); border-color: var(--text); }
+
+  .topbar-r { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
+  .status-chip { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); display: inline-block; }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in oklch, var(--ok) 22%, transparent); }
+  .dot.warn { background: var(--warn); box-shadow: 0 0 0 3px color-mix(in oklch, var(--warn) 22%, transparent); }
+  .dot.err { background: var(--error); box-shadow: 0 0 0 3px color-mix(in oklch, var(--error) 22%, transparent); }
+
+  .gear-btn { width: 36px; height: 36px; border-radius: 999px; border: 1px solid var(--hairline-2); background: transparent; color: var(--muted); display: grid; place-items: center; transition: color 120ms, border-color 120ms; }
+  .gear-btn:hover { color: var(--text); border-color: var(--text); }
+
+  /* Main */
+  .mn { width: 100%; max-width: 1400px; margin: 0 auto; padding: 36px 40px 80px; }
+
+  .page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; margin-bottom: 24px; flex-wrap: wrap; }
+  .page-title { margin: 0; font-size: clamp(40px, 5.5vw, 56px); line-height: 1; font-weight: 500; letter-spacing: -0.02em; }
+  .page-note { color: var(--muted); margin: 12px 0 0; max-width: 60ch; font-size: 14px; }
+  .page-head-r { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .ph-r-info { font-size: 11.5px; color: var(--faint); }
+
+  /* Buttons */
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border-radius: var(--radius-sm); border: 1px solid var(--hairline-2); background: transparent; color: var(--text); min-height: 38px; padding: 8px 14px; font-size: 13px; font-weight: 500; white-space: nowrap; transition: background 120ms, border-color 120ms; }
+  .btn:hover { background: var(--surface-2); border-color: var(--text); }
+  .btn-solid { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .btn-solid:hover { background: var(--accent); border-color: var(--accent); }
+  .btn-danger { color: var(--error); border-color: color-mix(in oklch, var(--error) 35%, transparent); }
+  .btn-danger:hover { background: color-mix(in oklch, var(--error) 12%, transparent); border-color: var(--error); }
+  .btn-sm { min-height: 30px; padding: 5px 10px; font-size: 12px; }
+
+  .icon-btn { width: 28px; height: 28px; border-radius: 5px; background: transparent; border: 0; display: inline-grid; place-items: center; color: var(--muted); }
+  .icon-btn:hover { background: var(--surface-2); color: var(--text); }
+  .icon-btn-danger:hover { background: color-mix(in oklch, var(--error) 14%, transparent); color: var(--error); }
+
+  /* Cards */
+  .card { background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--radius); }
+  .card-pad { padding: var(--pad); }
+
+  /* Home tiles */
+  .home-head { margin-bottom: 28px; }
+  .home-title { margin: 0; font-size: clamp(40px, 6vw, 68px); line-height: 1; letter-spacing: -0.025em; font-weight: 400; max-width: 720px; }
+  .home-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+  .home-tile { position: relative; background: var(--surface); border: 1px solid var(--hairline); border-radius: 12px; padding: 24px; text-align: left; display: flex; flex-direction: column; gap: 12px; min-height: 280px; color: var(--text); transition: border-color 180ms, transform 180ms, background 180ms; }
+  .home-tile:hover { border-color: var(--text); transform: translateY(-1px); background: var(--surface-2); }
+  .home-tile-icon { color: var(--muted); margin-bottom: 6px; }
+  .home-tile:hover .home-tile-icon { color: var(--text); }
+  .home-tile-num { font-size: 64px; line-height: 0.9; letter-spacing: -0.04em; font-weight: 400; }
+  .home-tile-num-label { font-size: 10.5px; color: var(--faint); letter-spacing: 0.12em; text-transform: uppercase; }
+  .home-tile-body { margin-top: auto; }
+  .home-tile-label { font-size: 22px; line-height: 1.1; margin-bottom: 6px; font-weight: 500; }
+  .home-tile-foot { display: flex; flex-direction: column; gap: 6px; padding-top: 16px; border-top: 1px solid var(--hairline); margin-top: 12px; }
+  .home-tile-foot-t { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--faint); letter-spacing: 0.04em; }
+  .meter-track { height: 2px; background: var(--surface-2); border-radius: 999px; overflow: hidden; }
+  .meter-fill { height: 100%; background: var(--text); transition: width 280ms; }
+  .meter-fill.ok { background: var(--ok); }
+  .meter-fill.err { background: var(--error); }
+
+  /* Section banner — session state */
+  .banner { display: grid; grid-template-columns: auto 1fr auto; gap: 14px; align-items: center; padding: 14px 18px; border-radius: 10px; border: 1px solid var(--hairline); background: var(--surface); margin-bottom: 22px; }
+  .banner-warn { border-color: color-mix(in oklch, var(--warn) 30%, var(--hairline)); background: color-mix(in oklch, var(--warn) 8%, var(--surface)); }
+  .banner-ok { border-color: color-mix(in oklch, var(--ok) 30%, var(--hairline)); background: color-mix(in oklch, var(--ok) 6%, var(--surface)); }
+  .banner-icon { display: grid; place-items: center; color: var(--muted); }
+  .banner-warn .banner-icon { color: var(--warn); }
+  .banner-ok .banner-icon { color: var(--ok); }
+  .banner-title { font-size: 13.5px; font-weight: 500; }
+  .banner-sub { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+
+  /* Upload zone */
+  .uz { display: grid; grid-template-columns: auto 1fr auto; gap: 24px; align-items: center; padding: 22px 26px; border: 1.5px dashed var(--hairline-2); border-radius: 10px; background: color-mix(in oklch, var(--surface) 50%, transparent); margin-bottom: 22px; transition: border-color 160ms, background 160ms; }
+  .uz-drag { border-color: var(--text); background: var(--surface-2); }
+  .uz-icon { color: var(--muted); }
+  .uz-title { font-size: 16px; font-weight: 500; }
+  .uz-note { font-size: 12px; color: var(--muted); margin-top: 4px; line-height: 1.55; max-width: 60ch; }
+  .uz-kinds { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  .uz-chip { display: inline-block; padding: 2px 8px; font-size: 10px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--hairline); border-radius: 999px; letter-spacing: 0.04em; }
+  .uz-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 14px; }
+  .uz-file-input { display: none; }
+
+  /* Rejection */
+  .rj { display: flex; flex-direction: column; gap: 6px; margin: -10px 0 22px; }
+  .rj-row { display: grid; grid-template-columns: auto 1fr auto; gap: 14px; align-items: center; padding: 12px 16px; background: color-mix(in oklch, var(--warn) 8%, var(--surface)); border: 1px solid color-mix(in oklch, var(--warn) 30%, var(--hairline)); border-radius: 8px; }
+  .rj-icon { color: var(--warn); display: grid; place-items: center; }
+  .rj-name { font-size: 13px; color: var(--text); }
+  .rj-reason { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+  .rj-dismiss { width: 26px; height: 26px; border: 0; background: transparent; color: var(--muted); border-radius: 4px; display: grid; place-items: center; }
+  .rj-dismiss:hover { background: var(--surface-2); color: var(--text); }
+
+  /* Folder tabs */
+  .folder-tabs { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 0; border: 1px solid var(--hairline); border-radius: 10px; background: var(--surface); overflow: hidden; margin-bottom: 18px; }
+  .folder-tab { display: flex; flex-direction: column; gap: 4px; padding: 14px 18px; background: transparent; border: 0; border-right: 1px solid var(--hairline); color: var(--muted); text-align: left; transition: background 120ms, color 120ms; }
+  .folder-tab:last-child { border-right: 0; }
+  .folder-tab:hover { color: var(--text); background: var(--surface-2); }
+  .folder-tab.on { color: var(--text); background: var(--surface-2); }
+  .folder-tab-l { font-size: 13px; font-weight: 500; }
+  .folder-tab-c { font-size: 11px; color: var(--faint); }
+
+  /* File table */
+  .file-tbl { width: 100%; border-collapse: collapse; font-size: 13px; background: var(--surface); }
+  .file-tbl th { text-align: left; font-weight: 500; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--faint); padding: 12px 14px; border-bottom: 1px solid var(--hairline); }
+  .file-tbl td { padding: 12px 14px; border-bottom: 1px solid var(--hairline); }
+  .file-tbl tr { cursor: pointer; }
+  .file-tbl tr:hover { background: var(--surface-2); }
+  .file-tbl-actions { white-space: nowrap; text-align: right; }
+  .file-tbl-icon { color: var(--faint); width: 30px; }
+  .file-name { color: var(--text); }
+  .file-empty { padding: 60px; text-align: center; color: var(--muted); }
+  .file-empty-h { font-size: 14px; color: var(--text); margin-bottom: 4px; }
+  .file-empty-s { font-size: 11.5px; color: var(--faint); }
+
+  /* Lock chime layout */
+  .lc-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: var(--gap); }
+  .lc-current { background: var(--surface); border: 1px solid var(--hairline); border-radius: 10px; padding: 32px; }
+  .lc-current-h { font-size: 10px; color: var(--faint); letter-spacing: 0.16em; margin-bottom: 10px; text-transform: uppercase; }
+  .lc-name { font-size: 36px; line-height: 1; letter-spacing: -0.02em; font-weight: 500; margin-bottom: 22px; }
+  .lc-info { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 24px; margin-bottom: 28px; }
+  .lc-info-r { display: flex; flex-direction: column; gap: 3px; }
+  .lc-info-k { font-size: 10px; color: var(--faint); letter-spacing: 0.12em; }
+  .lc-info-v { font-size: 13px; }
+  .lc-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .lc-side { display: flex; flex-direction: column; gap: var(--gap); }
+  .lc-side .uz { margin-bottom: 0; }
+  .lc-rules { background: var(--surface); border: 1px solid var(--hairline); border-radius: 10px; padding: 20px 22px; }
+  .lc-rules-h { font-size: 10px; color: var(--faint); letter-spacing: 0.16em; margin-bottom: 12px; text-transform: uppercase; }
+  .lc-rules-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+  .lc-rules-list li { display: flex; gap: 8px; align-items: flex-start; }
+  .lc-rules-list .dot-mark { color: var(--faint); }
+  .lc-empty { padding: 40px; text-align: center; color: var(--muted); border: 1px dashed var(--hairline-2); border-radius: 10px; background: color-mix(in oklch, var(--surface) 40%, transparent); }
+  .lc-empty-h { font-size: 16px; color: var(--text); margin-bottom: 4px; }
+
+  /* Settings */
+  .set-body { display: grid; grid-template-columns: 220px 1fr; gap: var(--gap); }
+  .set-nav { display: flex; flex-direction: column; gap: 2px; align-self: start; position: sticky; top: 80px; }
+  .set-nav-i { background: transparent; border: 0; padding: 11px 14px; border-radius: var(--radius-sm); text-align: left; color: var(--muted); }
+  .set-nav-i:hover, .set-nav-i.on { color: var(--text); background: var(--surface); }
+  .set-nav-l { font-size: 13px; font-weight: 500; }
+  .set-nav-d { font-size: 10px; color: var(--faint); margin-top: 1px; letter-spacing: 0.06em; }
+  .set-section-title { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin: 0 0 14px; }
+  .kv { display: flex; justify-content: space-between; gap: 16px; padding: 9px 0; border-bottom: 1px solid var(--hairline); align-items: baseline; }
+  .kv:last-child { border-bottom: 0; }
+  .kv-k { color: var(--muted); font-size: 12.5px; }
+  .kv-v { font-size: 13px; text-align: right; }
+  .log-pre { white-space: pre-wrap; background: var(--bg); color: var(--muted); border: 1px solid var(--hairline); border-radius: 6px; padding: 14px; max-height: 320px; overflow: auto; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.55; }
+  .tg-row { display: flex; justify-content: space-between; align-items: center; padding: 11px 0; border: 0; background: transparent; width: 100%; border-bottom: 1px solid var(--hairline); color: inherit; text-align: left; }
+  .tg-label { font-size: 13px; }
+  .tg { width: 32px; height: 18px; border-radius: 999px; background: var(--hairline-2); position: relative; transition: background 160ms; flex-shrink: 0; }
+  .tg-on { background: var(--ok); }
+  .tg-knob { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--text); transition: left 160ms; }
+  .tg-on .tg-knob { left: 16px; }
+
+  /* Toast */
+  .toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: var(--text); color: var(--bg); border-radius: 999px; padding: 10px 18px; font-weight: 500; z-index: 20; box-shadow: 0 12px 40px rgba(0,0,0,.28); font-size: 13px; }
+  .toast.err { background: var(--error); color: white; }
+  .splash, .extend-modal { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 22px; background: color-mix(in srgb, var(--bg) 92%, black); }
+  .splash.hidden, .extend-modal.hidden { display: none; }
+  .splash-card, .extend-card { width: min(560px, 100%); background: var(--surface); border: 1px solid var(--hairline-2); border-radius: var(--radius); padding: 28px; box-shadow: 0 24px 80px rgba(0,0,0,.3); }
+  .splash-title, .extend-title { margin: 0; font-size: 36px; line-height: 1; letter-spacing: 0; }
+  .splash-sub, .extend-sub { color: var(--muted); margin: 14px 0 22px; }
+  .splash-actions, .extend-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+  .session-timer { color: var(--warn); }
+
+  /* Responsive */
+  @media (max-width: 900px) {
+    .topbar { padding: 14px 20px; }
+    .mn { padding: 24px 20px 56px; }
+    .home-tiles { grid-template-columns: repeat(2, 1fr); }
+    .home-tile { min-height: 200px; padding: 18px; }
+    .home-tile-num { font-size: 48px; }
+    .home-tile-label { font-size: 18px; }
+    .lc-grid { grid-template-columns: 1fr; }
+    .set-body { grid-template-columns: 1fr; }
+    .set-nav { position: static; flex-direction: row; flex-wrap: wrap; overflow-x: auto; }
+    .uz { grid-template-columns: 1fr; text-align: left; gap: 14px; padding: 18px; }
+    .uz-actions { align-items: flex-start; }
+    .topbar-r .status-chip:nth-child(n+2) { display: none; }
+  }
+  @media (max-width: 560px) {
+    .home-tiles { grid-template-columns: 1fr; }
+    .folder-tabs { grid-template-columns: repeat(2, 1fr); }
+    .lc-info { grid-template-columns: 1fr; }
+    .topbar { padding: 12px 16px; }
+    .mn { padding: 20px 16px 60px; }
+    .page-title { font-size: 36px; }
+    .home-title { font-size: 36px; }
+  }
+
+  svg { display: block; }
+</style>
 </head>
 <body>
-  <div class="app">
-    <header class="topbar">
-      <div class="brand">
-        <div class="brand-name">TeslaDrive</div>
-        <div class="brand-sub mono">local portal</div>
-      </div>
-      <div class="topbar-r">
-        <span class="status-chip mono"><span id="usbDot" class="dot"></span><span id="usbText">USB unknown</span></span>
-        <span class="status-chip mono"><span id="sessionDot" class="dot"></span><span id="sessionText">session unknown</span></span>
-        <button id="sessionButton" class="btn btn-solid" type="button">Start transfer session</button>
-        <button class="icon-btn" type="button" title="Settings" onclick="showPage('settings')">⚙</button>
-      </div>
-    </header>
-    <main class="mn">
-      <section id="page-home">
-        <div class="page-head">
-          <div>
-            <h1 class="page-title">What would you like to manage?</h1>
-            <p class="page-note">Join the Pi hotspot, start a transfer session, then browse, download, or upload files directly on the Tesla-visible drives.</p>
-          </div>
-        </div>
-        <div id="homeGrid" class="home-grid"></div>
-      </section>
+<div class="app">
+  <header class="topbar">
+    <div class="topbar-l">
+      <div id="brandSlot"></div>
+    </div>
+    <div class="topbar-r">
+      <span class="status-chip mono"><span id="usbDot" class="dot"></span><span id="usbText">usb unknown</span></span>
+      <span class="status-chip mono"><span id="sessionDot" class="dot"></span><span id="sessionText">session unknown</span></span>
+      <button id="sessionButton" class="btn btn-solid" type="button">Start session</button>
+      <button class="gear-btn" type="button" title="Settings" onclick="showPage('settings')">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+          <circle cx="12" cy="12" r="3"/>
+        </svg>
+      </button>
+    </div>
+  </header>
 
-      <section id="page-browser" class="hidden">
-        <div class="page-head">
-          <div>
-            <button class="btn btn-sm" type="button" onclick="showPage('home')">Home</button>
-            <h1 id="browserTitle" class="page-title">Files</h1>
-            <p id="browserNote" class="page-note"></p>
-          </div>
-        </div>
-        <div class="panel-grid">
-          <div>
-            <div id="folderTabs" class="folder-tabs"></div>
-            <div class="toolbar">
-              <span id="pathLabel" class="mono"></span>
-              <button id="parentButton" class="btn btn-sm" type="button">Up one folder</button>
-            </div>
-            <div id="fileGrid" class="files"></div>
-            <div class="file-list-wrap card" style="margin-top: 16px;">
-              <table class="file-list">
-                <thead><tr><th>Name</th><th>Type</th><th>Size</th><th></th></tr></thead>
-                <tbody id="fileTable"></tbody>
-              </table>
-            </div>
-          </div>
-          <aside>
-            <div class="card card-pad" id="uploadPanel"></div>
-            <div class="card card-pad" style="margin-top: 16px;">
-              <h2 class="section-title">Transfer session</h2>
-              <div class="kv"><span>USB gadget</span><strong id="sideUsb" class="mono">unknown</strong></div>
-              <div class="kv"><span>Drives mounted</span><strong id="sideMounts" class="mono">0</strong></div>
-            </div>
-          </aside>
-        </div>
-      </section>
+  <main class="mn">
+    <!-- HOME -->
+    <section id="page-home">
+      <div class="home-head">
+        <h1 class="home-title">What would you like to manage?</h1>
+      </div>
+      <div id="homeTiles" class="home-tiles"></div>
+    </section>
 
-      <section id="page-settings" class="hidden">
-        <div class="page-head">
-          <div>
-            <button class="btn btn-sm" type="button" onclick="showPage('home')">Home</button>
-            <h1 class="page-title">Settings</h1>
-            <p class="page-note">Local portal status and diagnostics. The old network-share workflow has been removed.</p>
-          </div>
+    <!-- DASH CAM -->
+    <section id="page-dashcam" class="hidden">
+      <div class="page-head">
+        <div>
+          <h1 class="page-title">Dash cam</h1>
         </div>
-        <div class="panel-grid">
-          <div class="card card-pad">
-            <h2 class="section-title">Connection</h2>
-            <div class="kv"><span>Portal host</span><strong class="mono">teslausb.local</strong></div>
-            <div class="kv"><span>Fallback address</span><strong class="mono">192.168.50.1</strong></div>
-            <div class="kv"><span>Uploads</span><strong id="uploadsStatus" class="mono">unknown</strong></div>
-            <div class="kv"><span>Transfer session</span><strong id="settingsSession" class="mono">unknown</strong></div>
-            <div class="kv"><span>USB gadget</span><strong id="settingsUsb" class="mono">unknown</strong></div>
-          </div>
-          <div class="card card-pad">
-            <h2 class="section-title">Recent activity</h2>
-            <pre id="logs" class="log"></pre>
-          </div>
+        <div class="page-head-r">
+          <span id="dashcamInfo" class="ph-r-info mono"></span>
         </div>
-      </section>
-    </main>
+      </div>
+      <div id="dashcamBanner"></div>
+      <div id="dashcamFolders" class="folder-tabs"></div>
+      <div class="card" style="padding: 0; overflow: hidden;">
+        <table class="file-tbl">
+          <thead><tr><th class="file-tbl-icon"></th><th>Name</th><th>Size</th><th></th></tr></thead>
+          <tbody id="dashcamTable"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- MUSIC -->
+    <section id="page-music" class="hidden">
+      <div class="page-head">
+        <div><h1 class="page-title">Music</h1></div>
+        <div class="page-head-r"><span id="musicInfo" class="ph-r-info mono"></span></div>
+      </div>
+      <div id="musicBanner"></div>
+      <div id="musicUpload"></div>
+      <div id="musicRejections" class="rj"></div>
+      <div class="card" style="padding: 0; overflow: hidden;">
+        <table class="file-tbl">
+          <thead><tr><th class="file-tbl-icon"></th><th>Name</th><th>Size</th><th></th></tr></thead>
+          <tbody id="musicTable"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- LIGHT SHOWS -->
+    <section id="page-lightshow" class="hidden">
+      <div class="page-head">
+        <div><h1 class="page-title">Light shows</h1></div>
+        <div class="page-head-r"><span id="lightshowInfo" class="ph-r-info mono"></span></div>
+      </div>
+      <div id="lightshowBanner"></div>
+      <div id="lightshowUpload"></div>
+      <div id="lightshowRejections" class="rj"></div>
+      <div class="card" style="padding: 0; overflow: hidden;">
+        <table class="file-tbl">
+          <thead><tr><th class="file-tbl-icon"></th><th>Name</th><th>Size</th><th></th></tr></thead>
+          <tbody id="lightshowTable"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- LOCK CHIME -->
+    <section id="page-chime" class="hidden">
+      <div class="page-head">
+        <div><h1 class="page-title">Lock chime</h1></div>
+      </div>
+      <div id="chimeBanner"></div>
+      <div id="chimeBody"></div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="page-settings" class="hidden">
+      <div class="page-head">
+        <div><h1 class="page-title">Settings</h1></div>
+      </div>
+      <div class="set-body">
+        <nav class="set-nav" id="setNav"></nav>
+        <div id="setMain"></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+<div id="splash" class="splash">
+  <div class="splash-card">
+    <h2 class="splash-title">Connect to TeslaDrive</h2>
+    <p class="splash-sub">Start a transfer session to temporarily disconnect the car-facing USB drives, mount them on the Pi, and manage files here. The session automatically ends after 5 minutes.</p>
+    <div class="splash-actions">
+      <button class="btn btn-solid" type="button" onclick="startTimedSession()">Start 5 minute session</button>
+      <button class="btn" type="button" onclick="hideSplash()">View only</button>
+    </div>
   </div>
-  <div id="toast" class="toast hidden"></div>
-  <script>
-    const icons = {
-      cam: "▦",
-      sounds: "✦",
-      music: "♪",
-      folder: "▣",
-      file: "□"
-    };
-    const homeOrder = [
-      { id: "cam", title: "Dash cam", countLabel: "files", path: "TeslaCam", note: "Sentry, Saved, Recent, Photobooth" },
-      { id: "music", title: "Music", countLabel: "tracks", path: "Music", note: "FLAC, MP3, WAV, M4A, AAC" },
-      { id: "sounds", title: "Light shows", countLabel: "extras", path: "LightShow", note: ".fseq with matching audio" },
-      { id: "lockchime", title: "Lock chime", countLabel: "active", special: "lockchime", note: "Replace LockChime.wav" }
-    ];
-    const tabs = {
-      cam: ["TeslaCam", "TeslaCam/RecentClips", "TeslaCam/SavedClips", "TeslaCam/SentryClips", "TeslaCam/Photobooth", "TeslaCam/EncryptedClips"],
-      sounds: ["", "LightShow", "Wraps", "LicensePlate", "Boombox"],
-      music: ["Music"]
-    };
-    let status = null;
-    let currentDrive = "cam";
-    let currentPath = "";
+</div>
+<div id="extendModal" class="extend-modal hidden">
+  <div class="extend-card">
+    <h2 class="extend-title">Need more time?</h2>
+    <p class="extend-sub">This transfer session will automatically end in about 2 minutes so the Tesla can see the USB drives again.</p>
+    <div class="extend-actions">
+      <button class="btn btn-solid" type="button" onclick="extendSession()">Extend 5 minutes</button>
+      <button class="btn btn-danger" type="button" onclick="endSessionNow()">End session now</button>
+      <button class="btn" type="button" onclick="dismissExtendPrompt()">Keep working</button>
+    </div>
+  </div>
+</div>
 
-    function esc(value) {
-      return String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+<script>
+/* ============== icon paths ============== */
+const ICONS = {
+  videocam: "M2 7h13v10H2zM15 10l6-3v10l-6-3z",
+  music: "M9 18V6l11-2v12M9 18a2 2 0 1 1-4 0 2 2 0 0 1 4 0Zm11-4a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z",
+  sparkles: "M10 6L11.5 10.5L16 12L11.5 13.5L10 18L8.5 13.5L4 12L8.5 10.5z M18 4L18.5 5.5L20 6L18.5 6.5L18 8L17.5 6.5L16 6L17.5 5.5z M19 16.5L19.5 17.5L20.5 18L19.5 18.5L19 19.5L18.5 18.5L17.5 18L18.5 17.5z",
+  bell: "M6 8v5l-2 3h16l-2-3V8a6 6 0 0 0-12 0z M9 19a3 3 0 0 0 6 0",
+  upload: "M12 16V4M6 10l6-6 6 6M4 20h16",
+  download: "M12 4v12m-6-6 6 6 6-6M4 20h16",
+  trash: "M5 7h14M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3",
+  back: "M15 6l-6 6 6 6",
+  folder: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",
+  file: "M6 3h9l5 5v13H6z M14 3v6h6",
+  warn: "M12 3 2 21h20L12 3Zm0 6v6m0 3v.5",
+  check: "M4 12l5 5L20 6",
+  play: "M6 4l14 8-14 8z",
+  x: "M6 6l12 12M18 6 6 18",
+};
+function svgIcon(name, size = 18, stroke = 1.5) {
+  const d = ICONS[name];
+  if (!d) return "";
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${stroke}" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
+}
+
+/* ============== tile / folder config ============== */
+const TILES = [
+  { id: "dashcam",   drive: "cam",    icon: "videocam", label: "Dash cam",    countLabel: "files" },
+  { id: "music",     drive: "music",  icon: "music",    label: "Music",       countLabel: "tracks" },
+  { id: "lightshow", drive: "sounds", icon: "sparkles", label: "Light shows", countLabel: "shows" },
+  { id: "chime",     drive: "sounds", icon: "bell",     label: "Lock chime",  countLabel: "active" },
+];
+
+const DASHCAM_FOLDERS = [
+  { key: "TeslaCam/RecentClips",    label: "Recent" },
+  { key: "TeslaCam/SavedClips",     label: "Saved" },
+  { key: "TeslaCam/SentryClips",    label: "Sentry" },
+  { key: "TeslaCam/Photobooth",     label: "Photobooth" },
+  { key: "TeslaCam/EncryptedClips", label: "Encrypted" },
+];
+
+const SETTINGS_SECTIONS = [
+  { id: "connection",   label: "Connection",   desc: "Portal host" },
+  { id: "activity",     label: "Activity",     desc: "Recent log" },
+];
+
+/* ============== state ============== */
+let status = null;
+let currentPage = "home";
+let dashcamFolder = "TeslaCam/RecentClips";
+let dashcamItems = [];
+let musicItems = [];
+let lightshowItems = [];
+let rejections = { music: [], lightshow: [] };
+let settingsSection = "connection";
+let sessionDeadline = 0;
+let extendPromptShown = false;
+const SESSION_MS = 5 * 60 * 1000;
+const EXTEND_PROMPT_MS = 2 * 60 * 1000;
+
+/* ============== utilities ============== */
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+}
+function fmtBytes(n) {
+  if (n == null) return "—";
+  const units = ["B","KB","MB","GB","TB"];
+  let v = Number(n) || 0;
+  for (const u of units) { if (v < 1024 || u === "TB") return u === "B" ? `${v} B` : `${v.toFixed(1)} ${u}`; v /= 1024; }
+}
+function pct(usage) { return usage && usage.total ? Math.max(0, Math.min(100, (usage.used / usage.total) * 100)) : 0; }
+function toast(msg, kind) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.className = "toast" + (kind === "err" ? " err" : "");
+  setTimeout(() => el.classList.add("hidden"), 3000);
+  el.classList.remove("hidden");
+}
+async function api(path, options) {
+  const res = await fetch(path, options);
+  const ct = res.headers.get("content-type") || "";
+  const data = ct.includes("application/json") ? await res.json() : { error: await res.text() };
+  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  return data;
+}
+
+/* ============== status refresh ============== */
+async function refresh() {
+  try {
+    status = await api("/api/status");
+    renderBrand();
+    renderTopbarStatus();
+    reconcileSessionTimer();
+    if (currentPage === "home")      renderHome();
+    if (currentPage === "dashcam")   await loadDashcam();
+    if (currentPage === "music")     await loadFolder("music",     "music",  "Music",     "musicTable", "musicInfo", v => musicItems = v);
+    if (currentPage === "lightshow") await loadFolder("lightshow", "sounds", "LightShow", "lightshowTable", "lightshowInfo", v => lightshowItems = v);
+    if (currentPage === "chime")     await loadChime();
+    if (currentPage === "settings")  renderSettings();
+  } catch (e) {
+    toast(e.message, "err");
+  }
+}
+
+/* ============== brand / topbar ============== */
+function renderBrand() {
+  const slot = document.getElementById("brandSlot");
+  if (currentPage === "home") {
+    slot.innerHTML = `<div class="brand-name">TeslaDrive</div>`;
+  } else {
+    slot.innerHTML = `<button class="back-btn" type="button" onclick="showPage('home')">${svgIcon("back", 16)}<span>Home</span></button>`;
+  }
+}
+
+function renderTopbarStatus() {
+  const usb = status.usb || "unknown";
+  const usbConnected = usb === "connected";
+  document.getElementById("usbDot").className = `dot ${usbConnected ? "ok" : "warn"}`;
+  document.getElementById("usbText").textContent = `usb ${usb}`;
+
+  document.getElementById("sessionDot").className = `dot ${status.session_active ? "warn" : "ok"}`;
+  document.getElementById("sessionText").textContent = status.session_active ? sessionLabel() : "car mode";
+
+  const btn = document.getElementById("sessionButton");
+  btn.textContent = status.session_active ? "End session" : "Start session";
+  btn.className = "btn " + (status.session_active ? "btn-danger" : "btn-solid");
+  btn.onclick = status.session_active ? endSessionNow : startTimedSession;
+}
+
+async function toggleSession() {
+  return status?.session_active ? endSessionNow() : startTimedSession();
+}
+
+function hideSplash() {
+  document.getElementById("splash").classList.add("hidden");
+}
+
+function showSplashIfNeeded() {
+  const splash = document.getElementById("splash");
+  if (!status?.session_active) splash.classList.remove("hidden");
+}
+
+function sessionLabel() {
+  if (!sessionDeadline) return "transfer session";
+  const remaining = Math.max(0, sessionDeadline - Date.now());
+  const mins = Math.floor(remaining / 60000);
+  const secs = Math.floor((remaining % 60000) / 1000);
+  return `session ${mins}:${String(secs).padStart(2, "0")}`;
+}
+
+function reconcileSessionTimer() {
+  if (status?.session_active) {
+    hideSplash();
+    if (status.session_expires_at) {
+      sessionDeadline = status.session_expires_at * 1000;
+    } else if (!sessionDeadline || sessionDeadline < Date.now()) {
+      sessionDeadline = Date.now() + ((status.session_timeout_seconds || 300) * 1000);
+      extendPromptShown = false;
     }
-    function pct(usage) {
-      if (!usage || !usage.total) return 0;
-      return Math.max(0, Math.min(100, (usage.used / usage.total) * 100));
+  } else {
+    sessionDeadline = 0;
+    extendPromptShown = false;
+    document.getElementById("extendModal").classList.add("hidden");
+    showSplashIfNeeded();
+  }
+}
+
+async function startTimedSession() {
+  try {
+    hideSplash();
+    const nextStatus = await api("/session/start", { method: "POST" });
+    sessionDeadline = nextStatus.session_expires_at ? nextStatus.session_expires_at * 1000 : Date.now() + SESSION_MS;
+    extendPromptShown = false;
+    toast("Transfer session started for 5 minutes");
+    await refresh();
+  } catch (e) { toast(e.message, "err"); }
+}
+
+async function endSessionNow() {
+  try {
+    await api("/session/stop", { method: "POST" });
+    sessionDeadline = 0;
+    extendPromptShown = false;
+    document.getElementById("extendModal").classList.add("hidden");
+    toast("Transfer session ended");
+    await refresh();
+  } catch (e) { toast(e.message, "err"); }
+}
+
+async function extendSession() {
+  try {
+    const nextStatus = await api("/session/extend", { method: "POST" });
+    sessionDeadline = nextStatus.session_expires_at ? nextStatus.session_expires_at * 1000 : Date.now() + SESSION_MS;
+    extendPromptShown = false;
+    document.getElementById("extendModal").classList.add("hidden");
+    toast("Session extended 5 minutes");
+    await refresh();
+  } catch (e) { toast(e.message, "err"); }
+}
+
+function dismissExtendPrompt() {
+  document.getElementById("extendModal").classList.add("hidden");
+}
+
+function timerTick() {
+  if (!status?.session_active || !sessionDeadline) return;
+  const remaining = sessionDeadline - Date.now();
+  renderTopbarStatus();
+  if (remaining <= 0) {
+    endSessionNow();
+    return;
+  }
+  if (remaining <= EXTEND_PROMPT_MS && !extendPromptShown) {
+    extendPromptShown = true;
+    document.getElementById("extendModal").classList.remove("hidden");
+  }
+}
+
+/* ============== HOME ============== */
+function renderHome() {
+  const wrap = document.getElementById("homeTiles");
+  wrap.innerHTML = TILES.map(t => {
+    const drive = status.drives[t.drive];
+    let count;
+    if (t.id === "chime") {
+      count = drive?.mounted ? "1" : "—";
+    } else {
+      count = drive?.mounted ? (drive.files || 0) : "—";
     }
-    function fmtUsage(usage) {
-      if (!usage) return "not mounted";
-      return `${bytes(usage.used)} / ${bytes(usage.total)}`;
+    const usage = drive?.usage;
+    const meterTone = t.id === "chime" ? (drive?.mounted ? "ok" : "err") : "";
+    const meterWidth = t.id === "chime" ? (drive?.mounted ? 100 : 0) : pct(usage);
+    const footRight = t.id === "chime"
+      ? (drive?.mounted ? "LockChime.wav" : "no chime")
+      : (usage ? `${fmtBytes(usage.used)} / ${fmtBytes(usage.total)}` : "not mounted");
+    return `<button class="home-tile" type="button" onclick="showPage('${t.id}')">
+      <div class="home-tile-icon">${svgIcon(t.icon, 26, 1.2)}</div>
+      <div class="home-tile-num">${esc(String(count))}</div>
+      <div class="home-tile-num-label">${esc(t.countLabel)}</div>
+      <div class="home-tile-body">
+        <div class="home-tile-label">${esc(t.label)}</div>
+      </div>
+      <div class="home-tile-foot">
+        <div class="meter-track"><div class="meter-fill ${meterTone}" style="width:${meterWidth}%"></div></div>
+        <div class="home-tile-foot-t mono"><span>${esc(drive?.label || "")}</span><span>${esc(footRight)}</span></div>
+      </div>
+    </button>`;
+  }).join("");
+}
+
+/* ============== session banner ============== */
+function sessionBanner(message) {
+  if (status.session_active) return "";
+  return `<div class="banner banner-warn">
+    <div class="banner-icon">${svgIcon("warn", 18, 1.5)}</div>
+    <div>
+      <div class="banner-title">Transfer session not active</div>
+      <div class="banner-sub">${esc(message || "Start a session to mount the drives and enable file actions.")}</div>
+    </div>
+    <button class="btn btn-solid btn-sm" onclick="toggleSession()">Start session</button>
+  </div>`;
+}
+
+/* ============== folder rendering shared ============== */
+function fileRow(item, drive, onDelete) {
+  const icon = item.is_dir ? "folder" : "file";
+  const actions = item.is_dir
+    ? ""
+    : `<a class="icon-btn" href="${item.download}" title="Download" onclick="event.stopPropagation()">${svgIcon("download", 14)}</a>
+       ${status.deletes_enabled && status.session_active ? `<button class="icon-btn icon-btn-danger" title="Delete" onclick="event.stopPropagation(); ${onDelete}">${svgIcon("trash", 14)}</button>` : ""}`;
+  const click = item.is_dir ? "" : `onclick="window.location.href='${item.download}'"`;
+  return `<tr ${click}>
+    <td class="file-tbl-icon">${svgIcon(icon, 15, 1.4)}</td>
+    <td class="file-name">${esc(item.name)}</td>
+    <td class="mono num-faint">${esc(item.size_label || (item.is_dir ? "folder" : ""))}</td>
+    <td class="file-tbl-actions">${actions}</td>
+  </tr>`;
+}
+
+function emptyRow(message, sub) {
+  return `<tr><td colspan="4" class="file-empty"><div class="file-empty-h">${esc(message)}</div><div class="file-empty-s mono">${esc(sub || "")}</div></td></tr>`;
+}
+
+/* ============== DASH CAM ============== */
+async function loadDashcam() {
+  document.getElementById("dashcamBanner").innerHTML = sessionBanner("The car writes here. Start a transfer session to browse and download clips.");
+  const drive = status.drives.cam;
+  document.getElementById("dashcamInfo").textContent = drive?.mounted ? `${drive.files} files on ${drive.label}` : "TESLADRIVE not mounted";
+
+  // folder tabs
+  document.getElementById("dashcamFolders").innerHTML = DASHCAM_FOLDERS.map(f => `
+    <button class="folder-tab ${dashcamFolder === f.key ? "on" : ""}" onclick="dashcamFolder='${f.key}'; loadDashcam();">
+      <div class="folder-tab-l">${esc(f.label)}</div>
+    </button>
+  `).join("");
+
+  const tbody = document.getElementById("dashcamTable");
+  if (!drive?.mounted) {
+    tbody.innerHTML = emptyRow("Drive not mounted", "Start a transfer session to view clips.");
+    return;
+  }
+  try {
+    const list = await api(`/api/list?drive=cam&path=${encodeURIComponent(dashcamFolder)}`);
+    dashcamItems = list.items || [];
+    if (dashcamItems.length === 0) {
+      tbody.innerHTML = emptyRow("No clips here", "The car writes here when it records.");
+    } else {
+      tbody.innerHTML = dashcamItems.map(it => fileRow(it, "cam", `deleteItem('cam', '${esc(it.path).replace(/'/g, "&#39;")}')`)).join("");
     }
-    function bytes(value) {
-      const units = ["B", "KB", "MB", "GB", "TB"];
-      let n = Number(value || 0);
-      for (const unit of units) {
-        if (n < 1024 || unit === units[units.length - 1]) return unit === "B" ? `${n} B` : `${n.toFixed(1)} ${unit}`;
-        n /= 1024;
-      }
+  } catch (e) {
+    tbody.innerHTML = emptyRow("Could not load clips", e.message);
+  }
+}
+
+/* ============== MUSIC / LIGHT SHOWS — shared loader ============== */
+async function loadFolder(pageId, drive, path, tableId, infoId, setItems) {
+  const driveInfo = status.drives[drive];
+  document.getElementById(`${pageId}Banner`).innerHTML = sessionBanner();
+  document.getElementById(infoId).textContent = driveInfo?.mounted
+    ? `${driveInfo.files} files · ${driveInfo.usage ? fmtBytes(driveInfo.usage.used) + " / " + fmtBytes(driveInfo.usage.total) : ""}`
+    : `${driveInfo?.label || ""} not mounted`;
+
+  renderUploadZone(pageId);
+  renderRejections(pageId);
+
+  const tbody = document.getElementById(tableId);
+  if (!driveInfo?.mounted) {
+    tbody.innerHTML = emptyRow("Drive not mounted", "Start a transfer session to manage files.");
+    setItems([]);
+    return;
+  }
+  try {
+    const list = await api(`/api/list?drive=${drive}&path=${encodeURIComponent(path)}`);
+    const items = list.items || [];
+    setItems(items);
+    if (items.length === 0) {
+      tbody.innerHTML = emptyRow("No files yet", "Drop files into the zone above to add them.");
+    } else {
+      tbody.innerHTML = items.map(it => fileRow(it, drive, `deleteItem('${drive}', '${esc(it.path).replace(/'/g, "&#39;")}')`)).join("");
     }
-    function toast(message) {
-      const el = document.getElementById("toast");
-      el.textContent = message;
-      el.classList.remove("hidden");
-      setTimeout(() => el.classList.add("hidden"), 2800);
-    }
-    async function api(path, options) {
-      const res = await fetch(path, options);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Request failed");
-      return data;
-    }
-    async function refresh() {
-      status = await api("/api/status");
-      renderTopbar();
-      renderHome();
-      renderSettings();
-      renderUploadPanel();
-      if (!document.getElementById("page-browser").classList.contains("hidden")) {
-        await loadList(currentDrive, currentPath);
-      }
-    }
-    function renderTopbar() {
-      const usbOk = status.usb === "connected";
-      document.getElementById("usbDot").className = `dot ${usbOk ? "ok" : "warn"}`;
-      document.getElementById("usbText").textContent = `USB ${status.usb}`;
-      document.getElementById("sessionDot").className = `dot ${status.session_active ? "warn" : "ok"}`;
-      document.getElementById("sessionText").textContent = status.session_active ? "transfer active" : "car mode";
-      const button = document.getElementById("sessionButton");
-      button.textContent = status.session_active ? "End transfer session" : "Start transfer session";
-      button.className = status.session_active ? "btn btn-danger" : "btn btn-solid";
-      button.onclick = toggleSession;
-    }
-    function renderHome() {
-      const grid = document.getElementById("homeGrid");
-      grid.innerHTML = homeOrder.map(tile => {
-        const driveId = tile.special === "lockchime" ? "sounds" : tile.id;
-        const drive = status.drives[driveId];
-        const count = tile.special === "lockchime" ? (drive?.mounted ? "1" : "0") : (drive?.files || 0);
-        const mounted = drive?.mounted;
-        const usage = drive?.usage;
-        return `<button class="home-tile" type="button" onclick="${tile.special ? "openLockChime()" : `openDrive('${tile.id}','${tile.path}')`}">
-          <div class="home-icon">${icons[tile.id] || icons.file}</div>
-          <div class="home-num">${mounted ? count : "—"}</div>
-          <div class="home-num-label mono">${esc(mounted ? tile.countLabel : "not mounted")}</div>
-          <div>
-            <div class="home-label">${esc(tile.title)}</div>
-            <div class="page-note">${esc(tile.note)}</div>
-          </div>
-          <div class="meter">
-            <div class="meter-track"><div class="meter-fill" style="width:${pct(usage)}%"></div></div>
-            <div class="meter-row mono"><span>${esc(drive?.label || "")}</span><span>${esc(fmtUsage(usage))}</span></div>
-          </div>
-        </button>`;
-      }).join("");
-    }
-    function renderSettings() {
-      document.getElementById("uploadsStatus").textContent = status.uploads_enabled ? "enabled" : "disabled";
-      document.getElementById("settingsSession").textContent = status.session_active ? "active" : "inactive";
-      document.getElementById("settingsUsb").textContent = status.usb;
-      document.getElementById("logs").textContent = status.logs || "No portal activity yet.";
-      document.getElementById("sideUsb").textContent = status.usb;
-      document.getElementById("sideMounts").textContent = Object.values(status.drives || {}).filter(d => d.mounted).length;
-    }
-    function renderUploadPanel() {
-      const panel = document.getElementById("uploadPanel");
-      if (!panel) return;
-      const targets = Object.entries(status.upload_targets || {}).map(([key, target]) => `<option value="${esc(key)}">${esc(target.label)}</option>`).join("");
-      panel.innerHTML = `<h2 class="section-title">Upload</h2>
-        ${status.session_active && status.uploads_enabled ? `<form id="uploadForm" class="upload-form">
-          <div class="upload-zone">
-            <label>Destination<select name="target">${targets}</select></label>
-          </div>
-          <div class="upload-zone">
-            <label>File<input name="file" type="file" required></label>
-          </div>
-          <button class="btn btn-solid" type="submit">Upload file</button>
-        </form>` : `<p class="page-note">Start a transfer session to upload files.</p>`}`;
-      const form = document.getElementById("uploadForm");
-      if (form) form.onsubmit = uploadFile;
-    }
-    async function uploadFile(event) {
-      event.preventDefault();
-      const form = event.currentTarget;
-      const body = new FormData(form);
+  } catch (e) {
+    tbody.innerHTML = emptyRow("Could not load files", e.message);
+  }
+}
+
+/* ============== UPLOAD ZONE ============== */
+function uploadConfigFor(pageId) {
+  if (pageId === "music") {
+    return { target: "music", title: "Drop music here", note: "FLAC for lossless. MP3, WAV, M4A, AAC also accepted.", kinds: [".flac", ".mp3", ".wav", ".m4a", ".aac"], accept: "audio/*,.flac,.mp3,.wav,.m4a,.aac" };
+  }
+  if (pageId === "lightshow") {
+    return { target: "lightshow", title: "Drop .fseq + paired audio", note: "Filenames must match — e.g. Funky Town.fseq + Funky Town.mp3.", kinds: [".fseq", ".mp3", ".wav"], accept: ".fseq,.mp3,.wav" };
+  }
+  if (pageId === "chime") {
+    return { target: "lockchime", title: "Replace lock chime", note: "Drop a .wav file. The car uses the new chime after the next lock event.", kinds: [".wav"], accept: ".wav" };
+  }
+  return null;
+}
+
+function renderUploadZone(pageId) {
+  const wrap = document.getElementById(`${pageId}Upload`);
+  if (!wrap) return;
+  if (!status.uploads_enabled || !status.session_active) {
+    wrap.innerHTML = "";
+    return;
+  }
+  const cfg = uploadConfigFor(pageId);
+  if (!cfg) { wrap.innerHTML = ""; return; }
+  wrap.innerHTML = `<div class="uz" id="uz-${pageId}">
+    <div class="uz-icon">${svgIcon("upload", 22, 1.3)}</div>
+    <div class="uz-body">
+      <div class="uz-title">${esc(cfg.title)}</div>
+      <div class="uz-note">${esc(cfg.note)}</div>
+      <div class="uz-kinds mono">
+        ${cfg.kinds.map(k => `<span class="uz-chip">${esc(k.replace(".",""))}</span>`).join("")}
+      </div>
+    </div>
+    <div class="uz-actions">
+      <button class="btn btn-solid" onclick="document.getElementById('uz-file-${pageId}').click()">${svgIcon("upload", 15)}<span>Choose files</span></button>
+    </div>
+    <input id="uz-file-${pageId}" class="uz-file-input" type="file" accept="${cfg.accept}" multiple onchange="handleUpload('${pageId}', this.files)">
+  </div>`;
+
+  const uz = document.getElementById(`uz-${pageId}`);
+  uz.addEventListener("dragover", e => { e.preventDefault(); uz.classList.add("uz-drag"); });
+  uz.addEventListener("dragleave", () => uz.classList.remove("uz-drag"));
+  uz.addEventListener("drop", e => {
+    e.preventDefault();
+    uz.classList.remove("uz-drag");
+    handleUpload(pageId, e.dataTransfer.files);
+  });
+}
+
+async function handleUpload(pageId, fileList) {
+  const cfg = uploadConfigFor(pageId);
+  if (!cfg) return;
+  const files = Array.from(fileList || []);
+  for (const file of files) {
+    const body = new FormData();
+    body.append("target", cfg.target);
+    body.append("file", file);
+    try {
       const data = await api("/upload", { method: "POST", body });
       toast(`Uploaded ${data.filename}`);
-      form.reset();
-      await refresh();
-      await loadList(data.drive, data.path || "");
+    } catch (e) {
+      const reasonText = e.message || "Upload failed";
+      const suggest = file.name
+        .normalize("NFKD")
+        .replace(/[\u2018\u2019\u201A\u201B\u2032]/g, "'")
+        .replace(/[\u201C\u201D\u201E\u201F\u2033]/g, '"')
+        .replace(/[\u2010-\u2015]/g, "-")
+        .replace(/[^\x00-\x7F]/g, "");
+      const bucket = pageId === "lightshow" ? "lightshow" : "music";
+      rejections[bucket] = rejections[bucket] || [];
+      rejections[bucket].push({ id: Date.now() + Math.random(), name: file.name, reason: reasonText, suggest: suggest !== file.name ? suggest : null });
+      renderRejections(pageId);
     }
-    async function toggleSession() {
-      const action = status.session_active ? "/session/stop" : "/session/start";
-      await api(action, { method: "POST" });
-      toast(status.session_active ? "Transfer session ended" : "Transfer session started");
-      await refresh();
-    }
-    function showPage(page) {
-      document.querySelectorAll("main > section").forEach(el => el.classList.add("hidden"));
-      document.getElementById(`page-${page}`).classList.remove("hidden");
-      document.documentElement.dataset.page = page;
-      if (page === "settings") renderSettings();
-    }
-    function openLockChime() {
-      openDrive("sounds", "");
-      setTimeout(() => {
-        const select = document.querySelector("#uploadForm select[name='target']");
-        if (select) select.value = "lockchime";
-      }, 0);
-    }
-    async function openDrive(drive, path) {
-      showPage("browser");
-      await loadList(drive, path || "");
-    }
-    async function loadList(drive, path) {
-      currentDrive = drive;
-      currentPath = path || "";
-      const info = status.drives[drive];
-      document.getElementById("browserTitle").textContent = info?.title || "Files";
-      document.getElementById("browserNote").textContent = `${info?.label || ""} ${info?.mounted ? "is mounted for this transfer session." : "is not mounted. Start a transfer session first."}`;
-      renderTabs(drive);
-      const pathLabel = document.getElementById("pathLabel");
-      pathLabel.textContent = currentPath || "/";
-      const parentButton = document.getElementById("parentButton");
-      parentButton.disabled = !currentPath;
-      parentButton.onclick = () => loadList(currentDrive, currentPath.split("/").slice(0, -1).join("/"));
-      if (!info?.mounted) {
-        renderItems([]);
-        return;
-      }
-      const list = await api(`/api/list?drive=${encodeURIComponent(drive)}&path=${encodeURIComponent(currentPath)}`);
-      renderItems(list.items);
-    }
-    function renderTabs(drive) {
-      document.getElementById("folderTabs").innerHTML = (tabs[drive] || [""]).map(path => `<button type="button" class="tab ${path === currentPath ? "on" : ""}" onclick="loadList('${drive}', '${path.replace(/'/g, "\\'")}')">${esc(path || "Root")}</button>`).join("");
-    }
-    function renderItems(items) {
-      const grid = document.getElementById("fileGrid");
-      const table = document.getElementById("fileTable");
-      if (!items.length) {
-        grid.innerHTML = `<div class="empty">No files here yet.</div>`;
-        table.innerHTML = `<tr><td colspan="4" class="mono">No files here yet.</td></tr>`;
-        return;
-      }
-      grid.innerHTML = items.map(item => {
-        const action = item.is_dir ? `loadList('${currentDrive}', '${item.path.replace(/'/g, "\\'")}')` : `window.location.href='${item.download}'`;
-        return `<button class="file-card" type="button" onclick="${action}">
-          <div class="file-thumb mono">${item.is_dir ? icons.folder : icons.file}</div>
-          <div class="file-name">${esc(item.name)}</div>
-          <div class="file-meta mono"><span>${item.is_dir ? "folder" : "file"}</span><span>${esc(item.size_label)}</span></div>
-        </button>`;
-      }).join("");
-      table.innerHTML = items.map(item => {
-        const open = item.is_dir ? `loadList('${currentDrive}', '${item.path.replace(/'/g, "\\'")}')` : `window.location.href='${item.download}'`;
-        return `<tr>
-          <td><button class="link" type="button" onclick="${open}">${esc(item.name)}</button></td>
-          <td class="mono">${item.is_dir ? "folder" : "file"}</td>
-          <td class="mono">${esc(item.size_label)}</td>
-          <td>${item.is_dir ? "" : `<a class="btn btn-sm" href="${item.download}">Download</a>`}</td>
-        </tr>`;
-      }).join("");
-    }
-    refresh().catch(err => toast(err.message));
-    setInterval(() => refresh().catch(() => {}), 15000);
-  </script>
+  }
+  await refresh();
+}
+
+function renderRejections(pageId) {
+  const wrap = document.getElementById(`${pageId}Rejections`);
+  if (!wrap) return;
+  const bucket = pageId === "lightshow" ? "lightshow" : pageId === "music" ? "music" : null;
+  if (!bucket || !rejections[bucket] || rejections[bucket].length === 0) { wrap.innerHTML = ""; return; }
+  wrap.innerHTML = rejections[bucket].map(r => `
+    <div class="rj-row">
+      <span class="rj-icon">${svgIcon("warn", 14, 1.7)}</span>
+      <div>
+        <div class="rj-name mono">${esc(r.name)}</div>
+        <div class="rj-reason">${esc(r.reason)}${r.suggest ? ` · try renaming to <span class="mono">${esc(r.suggest)}</span>` : ""}</div>
+      </div>
+      <button class="rj-dismiss" onclick="dismissRejection('${bucket}', ${r.id})">${svgIcon("x", 13)}</button>
+    </div>
+  `).join("");
+}
+
+function dismissRejection(bucket, id) {
+  rejections[bucket] = (rejections[bucket] || []).filter(r => r.id !== id);
+  renderRejections(bucket);
+}
+
+/* ============== DELETE ============== */
+async function deleteItem(drive, path) {
+  if (!status.deletes_enabled) { toast("Deletes are disabled", "err"); return; }
+  if (!confirm(`Delete "${path}"? This cannot be undone.`)) return;
+  try {
+    await api("/api/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ drive, path }) });
+    toast("Deleted");
+    await refresh();
+  } catch (e) { toast(e.message, "err"); }
+}
+
+/* ============== LOCK CHIME ============== */
+async function loadChime() {
+  document.getElementById("chimeBanner").innerHTML = sessionBanner();
+  const drive = status.drives.sounds;
+  const wrap = document.getElementById("chimeBody");
+
+  if (!drive?.mounted) {
+    wrap.innerHTML = `<div class="lc-empty">
+      <div class="lc-empty-h">TeslaExtras not mounted</div>
+      <div class="file-empty-s mono">Start a transfer session to view or replace the lock chime.</div>
+    </div>`;
+    return;
+  }
+
+  let chime = null;
+  try {
+    const list = await api("/api/list?drive=sounds&path=");
+    chime = (list.items || []).find(it => !it.is_dir && it.name.toLowerCase() === "lockchime.wav");
+  } catch (e) { /* ignore */ }
+
+  const upload = uploadConfigFor("chime");
+  const uploadHtml = (status.uploads_enabled && status.session_active) ? `
+    <div class="uz" id="uz-chime">
+      <div class="uz-icon">${svgIcon("upload", 22, 1.3)}</div>
+      <div class="uz-body">
+        <div class="uz-title">${esc(upload.title)}</div>
+        <div class="uz-note">${esc(upload.note)}</div>
+        <div class="uz-kinds mono">${upload.kinds.map(k => `<span class="uz-chip">${esc(k.replace(".",""))}</span>`).join("")}</div>
+      </div>
+      <div class="uz-actions">
+        <button class="btn btn-solid" onclick="document.getElementById('uz-file-chime').click()">${svgIcon("upload", 15)}<span>Choose file</span></button>
+      </div>
+      <input id="uz-file-chime" class="uz-file-input" type="file" accept=".wav" onchange="handleUpload('chime', this.files)">
+    </div>` : "";
+
+  const rulesHtml = `<div class="lc-rules">
+    <div class="lc-rules-h">Rules</div>
+    <ul class="lc-rules-list">
+      <li><span class="dot-mark mono">•</span> Filename must be exactly <span class="mono">LockChime.wav</span></li>
+      <li><span class="dot-mark mono">•</span> Only one chime is active at a time</li>
+      <li><span class="dot-mark mono">•</span> Keep under 4 seconds — long files get clipped</li>
+      <li><span class="dot-mark mono">•</span> 16-bit PCM WAV works best · MP3 is rejected</li>
+    </ul>
+  </div>`;
+
+  if (!chime) {
+    wrap.innerHTML = `<div class="lc-grid">
+      <div class="lc-empty">
+        <div class="lc-empty-h">No lock chime yet</div>
+        <div class="file-empty-s mono">Upload a .wav file to set one.</div>
+      </div>
+      <div class="lc-side">${uploadHtml}${rulesHtml}</div>
+    </div>`;
+    bindUz("chime");
+    return;
+  }
+
+  wrap.innerHTML = `<div class="lc-grid">
+    <div class="lc-current">
+      <div class="lc-current-h">Currently on car</div>
+      <div class="lc-name">${esc(chime.name)}</div>
+      <div class="lc-info">
+        <div class="lc-info-r"><span class="lc-info-k">SIZE</span><span class="lc-info-v mono">${esc(chime.size_label)}</span></div>
+        <div class="lc-info-r"><span class="lc-info-k">UPDATED</span><span class="lc-info-v mono">${new Date(chime.modified * 1000).toLocaleString()}</span></div>
+      </div>
+      <div class="lc-actions">
+        <a class="btn" href="${chime.download}">${svgIcon("download", 15)}<span>Download</span></a>
+        ${status.deletes_enabled && status.session_active ? `<button class="btn btn-danger" onclick="deleteItem('sounds','${esc(chime.path).replace(/'/g, "&#39;")}')">${svgIcon("trash", 15)}<span>Remove from car</span></button>` : ""}
+      </div>
+    </div>
+    <div class="lc-side">${uploadHtml}${rulesHtml}</div>
+  </div>`;
+  bindUz("chime");
+}
+
+function bindUz(pageId) {
+  const uz = document.getElementById(`uz-${pageId}`);
+  if (!uz) return;
+  uz.addEventListener("dragover", e => { e.preventDefault(); uz.classList.add("uz-drag"); });
+  uz.addEventListener("dragleave", () => uz.classList.remove("uz-drag"));
+  uz.addEventListener("drop", e => {
+    e.preventDefault();
+    uz.classList.remove("uz-drag");
+    handleUpload(pageId, e.dataTransfer.files);
+  });
+}
+
+/* ============== SETTINGS ============== */
+function renderSettings() {
+  document.getElementById("setNav").innerHTML = SETTINGS_SECTIONS.map(s => `
+    <button class="set-nav-i ${settingsSection === s.id ? "on" : ""}" onclick="settingsSection='${s.id}'; renderSettings();">
+      <div class="set-nav-l">${esc(s.label)}</div>
+      <div class="set-nav-d mono">${esc(s.desc)}</div>
+    </button>
+  `).join("");
+
+  const main = document.getElementById("setMain");
+  if (settingsSection === "connection") {
+    const mounted = Object.values(status.drives || {}).filter(d => d.mounted).length;
+    main.innerHTML = `<div class="card card-pad">
+      <h2 class="set-section-title">Portal</h2>
+      <div class="kv"><span class="kv-k">Host</span><span class="kv-v mono">teslausb.local</span></div>
+      <div class="kv"><span class="kv-k">Fallback</span><span class="kv-v mono">192.168.50.1</span></div>
+      <div class="kv"><span class="kv-k">USB gadget</span><span class="kv-v mono">${esc(status.usb || "unknown")}</span></div>
+      <div class="kv"><span class="kv-k">Transfer session</span><span class="kv-v mono">${status.session_active ? "active" : "inactive"}</span></div>
+      <div class="kv"><span class="kv-k">Drives mounted</span><span class="kv-v mono">${mounted} of ${Object.keys(status.drives || {}).length}</span></div>
+      <div class="kv"><span class="kv-k">Uploads</span><span class="kv-v mono">${status.uploads_enabled ? "enabled" : "disabled"}</span></div>
+      <div class="kv"><span class="kv-k">Deletes</span><span class="kv-v mono">${status.deletes_enabled ? "enabled" : "disabled"}</span></div>
+    </div>`;
+  } else if (settingsSection === "activity") {
+    main.innerHTML = `<div class="card card-pad">
+      <h2 class="set-section-title">Recent log</h2>
+      <pre class="log-pre">${esc(status.logs || "No portal activity yet.")}</pre>
+    </div>`;
+  }
+}
+
+/* ============== nav ============== */
+function showPage(page) {
+  currentPage = page;
+  document.querySelectorAll("main > section").forEach(el => el.classList.add("hidden"));
+  const target = document.getElementById(`page-${page}`);
+  if (target) target.classList.remove("hidden");
+  document.documentElement.dataset.page = page;
+  renderBrand();
+  refresh();
+}
+
+/* boot */
+refresh();
+setInterval(timerTick, 1000);
+setInterval(() => { if (currentPage !== "settings") refresh().catch(() => {}); }, 15000);
+</script>
 </body>
 </html>"""
 
 
 def main():
+    threading.Thread(target=session_watchdog, daemon=True).start()
     server = ThreadingHTTPServer((HOST, PORT), PortalHandler)
     print(f"TeslaUSB portal listening on {HOST}:{PORT}", flush=True)
     server.serve_forever()
