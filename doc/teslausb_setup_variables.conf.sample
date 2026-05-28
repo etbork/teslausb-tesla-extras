@@ -4,21 +4,11 @@
 # Example config file for teslausb_setup. Lines with "#" are comments/ignored.
 # Remove the "#" before "export" to activate a line. Be sure to rename this file
 # to "teslausb_setup_variables.conf" and place it in the "boot" folder of your
-# SD card. 
+# SD card.
 #
 ######################################################################
 
-# Default variables for CIFS (Windows/Mac file sharing) setup
-export ARCHIVE_SYSTEM=cifs
-export archiveserver=your_archive_name_or_ip
-export sharename=your_archive_share_name
-export shareuser=username
-export sharepassword=password
-export archivepath=TeslaCamArchive
 export campercent=60
-
-# Optional: choose which TeslaCam folders are archived from the car-facing drive.
-# export ARCHIVE_CLIP_FOLDERS="SavedClips SentryClips RecentClips Photobooth EncryptedClips"
 
 # Optional: create a third Tesla-visible drive for Tesla extras.
 # campercent + soundspercent must leave room for the music partition.
@@ -27,29 +17,23 @@ export campercent=60
 # export SOUNDS_LABEL=TeslaExtras
 # export MUSIC_LABEL=TeslaMedia
 
-# Wifi setup information
+# Wi-Fi setup information for normal network access during setup.
 export SSID=your_ssid
 export WIFIPASS=your_pass
 
-# If doing a headless (i.e. automatic) setup
+# Run a Pi-hosted web portal and hotspot so a phone or computer can join the Pi
+# directly, browse/download clips, and upload Tesla media extras.
+export PORTAL_ENABLED=true
+# export PORTAL_WIFI_SSID=TeslaUSB
+# export PORTAL_WIFI_PASSWORD=teslausbportal
+# export PORTAL_ADDRESS=192.168.50.1
+# export PORTAL_UPLOADS_ENABLED=true
+
+# If doing a headless (i.e. automatic) setup.
 export HEADLESS_SETUP=true
 
-# Optional: sync media files from the archive share to the Tesla-visible media
-# partitions. The default source layout is:
-# TeslaUSB-Media/TeslaExtras and TeslaUSB-Media/TeslaMedia.
-# Existing TeslaUSB-Media/SOUNDS_LS folders are still accepted as a fallback.
-# export MEDIA_SYNC_ENABLED=true
-# export MEDIA_SYNC_SOURCE_DIR=TeslaUSB-Media
-# export MEDIA_SYNC_SOUNDS_SOURCE_DIR=TeslaExtras
-# export MEDIA_SYNC_MUSIC_SOURCE_DIR=TeslaMedia
-
-# Uncomment if you want to override the default hostname of "teslausb"
+# Uncomment if you want to override the default hostname of "teslausb".
 # export TESLAUSB_HOSTNAME=teslausb-Model3
-
-# Uncomment if setting up Pushover push notifications 
-# export pushover_enabled=false
-# export pushover_user_key=user_key
-# export pushover_app_key=app_key
 
 # Uncomment and change if you want setup scripts to be pulled
 # from a different repo than the "main" github.com/cimryan/teslausb.
@@ -57,5 +41,5 @@ export HEADLESS_SETUP=true
 # export REPO=cimryan
 # export REPOSITORY=teslausb
 
-# Uncomment and change if you want a different branch than master
+# Uncomment and change if you want a different branch than master.
 # export BRANCH=master

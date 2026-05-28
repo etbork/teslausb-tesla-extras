@@ -26,6 +26,7 @@ function check_available_space () {
 check_variable "campercent"
 
 soundspercent="${soundspercent:-0}"
+PORTAL_ENABLED="${PORTAL_ENABLED:-false}"
 
 if [ "$campercent" -lt 1 ] || [ "$campercent" -gt 100 ]
 then
@@ -43,6 +44,16 @@ if [ "$(( campercent + soundspercent ))" -gt 99 ] && [ "$soundspercent" -gt 0 ]
 then
   setup_progress "STOP: campercent plus soundspercent must leave space for the music partition."
   exit 1
+fi
+
+if [ "$PORTAL_ENABLED" = "true" ]
+then
+  PORTAL_WIFI_PASSWORD="${PORTAL_WIFI_PASSWORD:-teslausbportal}"
+  if [ "${#PORTAL_WIFI_PASSWORD}" -lt 8 ]
+  then
+    setup_progress "STOP: PORTAL_WIFI_PASSWORD must be at least 8 characters."
+    exit 1
+  fi
 fi
 
 check_available_space

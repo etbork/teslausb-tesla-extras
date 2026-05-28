@@ -14,40 +14,25 @@ This is a streamlined process for setting up the Pi. You'll flash a preconfigure
 
 ### For headless (automatic) setup
 
-1. Mount the card again, and in the `boot` directory create a `teslausb_setup_variables.conf` file to export the same environment varibles normally needed for manual setup (including archive info, Wifi, and push notifications (if desired). 
+1. Mount the card again, and in the `boot` directory create a `teslausb_setup_variables.conf` file to export the same environment variables normally needed for setup, including Wi-Fi and portal settings.
 A sample conf file is located in the `boot` folder on the SD card. 
 
-    The file should contain the entries below at a minimum, but **replace with your own values**. Be sure that your WiFi password is enclosed in single quotes, and that if it contains one or more single quote characters you replace each single quote character with a backslash followed by a single quote character.
-
-    For example, if your password were
-    ```
-    a'b
-    ```
-    you would have
-
-    ```
-    export sharepassword='a\'b'
-    ```
+    The file should contain the entries below at a minimum, but **replace with your own values**. Be sure that passwords with special shell characters are quoted.
 
     Example file:
 
     ```
-    export archiveserver=Nautilus
-    export sharename=SailfishCam
-    export shareuser=sailfish
-    export sharepassword='pa$$w0rd'
     export campercent=100
     export SSID=your_ssid
     export WIFIPASS=your_wifi_password
+    export PORTAL_ENABLED=true
+    export PORTAL_WIFI_SSID=TeslaUSB
+    export PORTAL_WIFI_PASSWORD=teslausbportal
     export HEADLESS_SETUP=true
     # export REPO=rtgoodwin
     # export BRANCH=headless-patch
     # By default will use the main repo, but if you've been asked to test the image, 
     # these variables should be uncommunted and updated to point to the right repo/branch 
-
-    # export pushover_enabled=false
-    # export pushover_user_key=user_key
-    # export pushover_app_key=app_key
     ```
 
 1. Boot it in your Pi, give it a bit, watching for a series of flashes (2, 3, 4, 5) and then a reboot and/or the CAM/music drives to become available on your PC/Mac. The LED flash stages are:
@@ -61,7 +46,7 @@ A sample conf file is located in the `boot` folder on the SD card.
 
 The Pi should be available for `ssh` at `pi@teslausb.local`, over Wifi (if automatic setup works) or USB networking (if it doesn't). It takes about 5 minutes, or more depending on network speed, etc. 
 
-If plugged into just a power source, or your car, give it a few minutes until the LED starts pulsing steadily which means the archive loop is running and you're good to go. 
+If plugged into just a power source, or your car, give it a few minutes for setup to finish. After setup, join the `TeslaUSB` Wi-Fi network and open `http://teslausb.local` or `http://192.168.50.1`.
 
 You should see in `/boot` the `TESLAUSB_SETUP_FINISHED` and `WIFI_ENABLED` files as markers of headless setup success as well.
 
@@ -100,7 +85,7 @@ When the Pi boots the first time:
   * ~~10 flashes means setup failed!~~ (not currently working)
 * After the final stage and reboot the LED will go back to normal. Remember, the step to remount the filesystem takes a few minutes.
 
-At this point the next boot should start the Dashcam/music drives like normal. If you're watching the LED it will start flashing every 1 second, which is the archive loop running. 
+At this point the next boot should start the Dashcam/music drives like normal and, when enabled, the local portal hotspot.
 
 > NOTE: Don't delete the `TESLAUSB_SETUP_FINISHED` or `WIFI_ENABLED` files. This is how the system knows setup is complete. 
 

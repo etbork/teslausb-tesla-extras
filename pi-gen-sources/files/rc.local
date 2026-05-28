@@ -122,9 +122,6 @@ then
 
     setup_progress "Starting setup."
 
-    # Update the archiveserver value if needed in script on disk
-    sed -i'.bak' -e "s/TEMPARCHIVESERVER/$archiveserver/g" /etc/rc.local
-
     # Start setup. This should take us all the way through to reboot
     /root/bin/setup-teslausb
 
@@ -132,21 +129,5 @@ then
     reboot
 fi
 
-LOGFILE=/tmp/rc.local.log
-
-function log () {
-  echo "$( date ) ${1}" >> "$LOGFILE"
-}
-if [ -e "/root/bin/archiveloop" ]
-then
-  log "Launching archival script..."
-  /root/bin/archiveloop TEMPARCHIVESERVER &
-  log "All done"
-else
-  echo "Setup doesn't seem to have completed, there is no /root/bin/archiveloop."
-  echo "Try re-running /root/bin/setup-teslausb (re-downloading if needed),"
-  echo "or export HEADLESS=true and run /etc/rc.local if you want to run automatic setup."
-fi
 exit 0
-
 

@@ -1,0 +1,135 @@
+#!/bin/bash
+set -euo pipefail
+
+LOCK_FILE=/run/teslausb-portal-session.lock
+STATE_FILE=/run/teslausb-portal-session.state
+LOG_FILE=${LOG_FILE:-/mutable/portal.log}
+
+CAM_MOUNT=${CAM_MOUNT:-/mnt/cam}
+SOUNDS_MOUNT=${SOUNDS_MOUNT:-/mnt/sounds}
+MUSIC_MOUNT=${MUSIC_MOUNT:-/mnt/music}
+
+function log () {
+  mkdir -p "$( dirname "$LOG_FILE" )" 2>/dev/null || true
+  {
+    date
+    echo "$1"
+  } >> "$LOG_FILE" 2>/dev/null || true
+}
+
+function is_mounted () {
+  findmnt --mountpoint "$1" > /dev/null 2>&1
+}
+
+function usb_connected () {
+  lsmod | awk '{ print $1 }' | grep -qx g_mass_storage
+}
+
+function mount_if_present () {
+  local mount_point="$1"
+
+  if [ ! -e "$mount_point" ]
+  then
+    return
+  fi
+
+  if ! is_mounted "$mount_point"
+  then
+    mount "$mount_point"
+  fi
+}
+
+function unmount_if_mounted () {
+  local mount_point="$1"
+
+  if is_mounted "$mount_point"
+  then
+    umount "$mount_point"
+  fi
+}
+
+function start_session () {
+  exec 9>"$LOCK_FILE"
+  if ! flock -n 9
+  then
+    echo "A transfer session is already running."
+    exit 2
+  fi
+
+  if [ -e "$STATE_FILE" ]
+  then
+    echo "A transfer session is already active."
+    exit 2
+  fi
+
+  log "Starting portal transfer session."
+
+  if usb_connected
+  then
+    modprobe -r g_mass_storage
+  fi
+
+  mount_if_present "$CAM_MOUNT"
+  mount_if_present "$SOUNDS_MOUNT"
+  mount_if_present "$MUSIC_MOUNT"
+
+  {
+    echo "started_at=$(date -Iseconds)"
+    echo "pid=$$"
+  } > "$STATE_FILE"
+
+  log "Portal transfer session started."
+}
+
+function stop_session () {
+  exec 9>"$LOCK_FILE"
+  flock 9
+
+  log "Stopping portal transfer session."
+
+  sync
+  unmount_if_mounted "$MUSIC_MOUNT"
+  unmount_if_mounted "$SOUNDS_MOUNT"
+  unmount_if_mounted "$CAM_MOUNT"
+
+  if ! usb_connected
+  then
+    modprobe g_mass_storage
+  fi
+
+  rm -f "$STATE_FILE"
+  log "Portal transfer session stopped."
+}
+
+function status_json () {
+  local session_active=false
+  local usb_state=disconnected
+  local cam_mounted=false
+  local sounds_mounted=false
+  local music_mounted=false
+
+  [ -e "$STATE_FILE" ] && session_active=true
+  usb_connected && usb_state=connected
+  is_mounted "$CAM_MOUNT" && cam_mounted=true
+  is_mounted "$SOUNDS_MOUNT" && sounds_mounted=true
+  is_mounted "$MUSIC_MOUNT" && music_mounted=true
+
+  printf '{"session_active":%s,"usb":"%s","mounts":{"cam":%s,"sounds":%s,"music":%s}}\n' \
+    "$session_active" "$usb_state" "$cam_mounted" "$sounds_mounted" "$music_mounted"
+}
+
+case "${1:-}" in
+  start)
+    start_session
+    ;;
+  stop)
+    stop_session
+    ;;
+  status)
+    status_json
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|status}" >&2
+    exit 64
+    ;;
+esac

@@ -1,2 +1,4 @@
 dos2unix
-hping3
+python3
+hostapd
+dnsmasq
