@@ -1343,6 +1343,11 @@ function cameraLabel(name) {
   return match[1].replace(/_/g, " ").replace(/\b\w/g, ch => ch.toUpperCase());
 }
 
+function cameraKey(name) {
+  const match = String(name || "").match(/-(back|front|left_pillar|left_repeater|right_pillar|right_repeater)\.mp4$/i);
+  return match ? match[1].toLowerCase() : "";
+}
+
 function formatClipTime(key) {
   const match = String(key || "").match(/^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})$/);
   if (!match) return key;
@@ -1374,7 +1379,9 @@ function groupDashcamItems(items) {
 }
 
 function clipStack(files) {
-  return `<span class="clip-stack">${files.slice(0, 3).map(file => `<video class="dash-thumb" src="${file.download}#t=0.1" muted preload="metadata" playsinline></video>`).join("")}</span>`;
+  const front = files.find(file => cameraKey(file.name) === "front");
+  const ordered = front ? [front, ...files.filter(file => file !== front)] : files;
+  return `<span class="clip-stack">${ordered.slice(0, 3).map(file => `<video class="dash-thumb" src="${file.download}#t=0.1" muted preload="metadata" playsinline></video>`).join("")}</span>`;
 }
 
 function clipGroupRow(group) {
