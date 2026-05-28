@@ -164,6 +164,22 @@ def count_files(root):
     return total
 
 
+def directory_size(root):
+    if not root.exists():
+        return 0
+    total = 0
+    try:
+        for current_root, _, files in os.walk(root):
+            for filename in files:
+                try:
+                    total += (Path(current_root) / filename).stat().st_size
+                except OSError:
+                    continue
+    except OSError:
+        return 0
+    return total
+
+
 def count_files_under(root, rel):
     target, _ = safe_join(root, rel)
     return count_files(target) if target.exists() else 0
@@ -309,16 +325,18 @@ def list_directory(drive_key, rel):
             stat = child.stat()
         except OSError:
             continue
+        is_dir = child.is_dir()
+        size = directory_size(child) if is_dir else stat.st_size
         child_rel = posixpath.join(rel, child.name) if rel else child.name
         items.append({
             "name": child.name,
             "path": child_rel,
-            "is_dir": child.is_dir(),
-            "size": 0 if child.is_dir() else stat.st_size,
-            "size_label": "" if child.is_dir() else format_bytes(stat.st_size),
+            "is_dir": is_dir,
+            "size": size,
+            "size_label": format_bytes(size),
             "modified": int(stat.st_mtime),
-            "download": "" if child.is_dir() else f"/download?drive={quote(drive_key)}&path={quote(child_rel)}",
-            "art": "" if child.is_dir() or child.suffix.lower() not in {".mp3", ".flac", ".m4a", ".aac", ".mp4"} else f"/art?drive={quote(drive_key)}&path={quote(child_rel)}",
+            "download": "" if is_dir else f"/download?drive={quote(drive_key)}&path={quote(child_rel)}",
+            "art": "" if is_dir or child.suffix.lower() not in {".mp3", ".flac", ".m4a", ".aac", ".mp4"} else f"/art?drive={quote(drive_key)}&path={quote(child_rel)}",
         })
     parent = posixpath.dirname(rel) if rel else ""
     return {"drive": drive_key, "path": rel, "parent": parent, "items": items}
@@ -1416,6 +1434,12 @@ function toggleClipGroup(key) {
   renderDashcamRows();
 }
 
+function openDashcamFolder(encodedPath) {
+  dashcamFolder = decodeURIComponent(encodedPath);
+  expandedClipGroups.clear();
+  loadDashcam();
+}
+
 function renderDashcamRows() {
   const tbody = document.getElementById("dashcamTable");
   if (!dashcamItems.length) {
@@ -1429,7 +1453,7 @@ function renderDashcamRows() {
       it,
       "cam",
       `deleteItem('cam', ${jsStr(it.path)})`,
-      `dashcamFolder=${jsStr(it.path)}; loadDashcam();`
+      `openDashcamFolder('${encodeURIComponent(it.path)}')`
     );
   }).join("");
 }
