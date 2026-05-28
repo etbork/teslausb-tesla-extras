@@ -794,8 +794,12 @@ APP_HTML = r"""<!doctype html>
   .clip-files { display: grid; gap: 8px; padding: 10px 0 0 102px; }
   .clip-file { display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; padding: 8px 10px; border: 1px solid var(--hairline); border-radius: 7px; background: var(--bg); }
   .clip-file-actions { display: flex; gap: 4px; align-items: center; }
+  .album-wrap { width: 38px; height: 38px; display: block; position: relative; overflow: hidden; border-radius: 6px; }
   .album-art { width: 38px; height: 38px; object-fit: cover; border-radius: 6px; background: var(--bg); border: 1px solid var(--hairline); display: block; }
   .album-fallback { width: 38px; height: 38px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--hairline); display: grid; place-items: center; color: var(--muted); }
+  .album-wrap .album-fallback { display: none; position: absolute; inset: 0; }
+  .album-wrap.art-missing .album-art { display: none; }
+  .album-wrap.art-missing .album-fallback { display: grid; }
   .audio-preview { width: min(260px, 34vw); height: 30px; vertical-align: middle; }
   .audio-row-actions { display: inline-flex; align-items: center; justify-content: flex-end; gap: 8px; }
   .file-name { color: var(--text); }
@@ -1299,7 +1303,7 @@ function sessionBanner(message) {
 function previewCell(item, drive) {
   if (drive === "music" && isAudio(item)) {
     return item.art
-      ? `<img class="album-art" src="${item.art}" alt="" loading="lazy" onerror="this.outerHTML='<span class=&quot;album-fallback&quot;>${svgIcon("music", 17).replace(/'/g, "&#39;")}</span>'">`
+      ? `<span class="album-wrap"><img class="album-art" src="${item.art}" alt="" loading="lazy" onerror="this.parentElement.classList.add('art-missing')"><span class="album-fallback">${svgIcon("music", 17)}</span></span>`
       : `<span class="album-fallback">${svgIcon("music", 17)}</span>`;
   }
   if (isVideo(item)) return `<video class="dash-thumb" src="${item.download}#t=0.1" muted preload="metadata" playsinline></video>`;
