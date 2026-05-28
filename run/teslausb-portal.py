@@ -559,6 +559,24 @@ class PortalHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
+    def do_HEAD(self):
+        parsed = urlparse(self.path)
+        try:
+            if parsed.path == "/download":
+                self.download(parsed, head_only=True)
+            elif parsed.path == "/art":
+                self.album_art(parsed, head_only=True)
+            elif parsed.path == "/":
+                data = APP_HTML.encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+            else:
+                self.send_error(HTTPStatus.NOT_FOUND)
+        except Exception as exc:
+            self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
     def do_POST(self):
         parsed = urlparse(self.path)
         try:
@@ -585,7 +603,7 @@ class PortalHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
-    def download(self, parsed):
+    def download(self, parsed, head_only=False):
         query = parse_qs(parsed.query)
         drive_key = query.get("drive", [""])[0]
         rel = query.get("path", [""])[0]
@@ -595,15 +613,57 @@ class PortalHandler(BaseHTTPRequestHandler):
         if not target.is_file():
             raise ValueError("Download path is not a file.")
         content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-        self.send_response(HTTPStatus.OK)
+        file_size = target.stat().st_size
+        range_header = self.headers.get("Range", "")
+        start = 0
+        end = file_size - 1
+        status = HTTPStatus.OK
+        if range_header:
+            match = re.match(r"bytes=(\d*)-(\d*)$", range_header.strip())
+            if not match:
+                self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                self.send_header("Content-Range", f"bytes */{file_size}")
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+                return
+            raw_start, raw_end = match.groups()
+            if raw_start == "" and raw_end:
+                suffix_len = int(raw_end)
+                start = max(0, file_size - suffix_len)
+            elif raw_start:
+                start = int(raw_start)
+            if raw_end and raw_start:
+                end = min(file_size - 1, int(raw_end))
+            if start >= file_size or end < start:
+                self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                self.send_header("Content-Range", f"bytes */{file_size}")
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+                return
+            status = HTTPStatus.PARTIAL_CONTENT
+
+        length = end - start + 1
+        self.send_response(status)
         self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(target.stat().st_size))
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        if status == HTTPStatus.PARTIAL_CONTENT:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
         self.send_header("Content-Disposition", f'attachment; filename="{target.name}"')
         self.end_headers()
+        if head_only:
+            return
         with target.open("rb") as file:
-            shutil.copyfileobj(file, self.wfile)
+            file.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = file.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
 
-    def album_art(self, parsed):
+    def album_art(self, parsed, head_only=False):
         query = parse_qs(parsed.query)
         drive_key = query.get("drive", [""])[0]
         rel = query.get("path", [""])[0]
@@ -622,7 +682,8 @@ class PortalHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(image)))
         self.send_header("Cache-Control", "private, max-age=3600")
         self.end_headers()
-        self.wfile.write(image)
+        if not head_only:
+            self.wfile.write(image)
 
     def handle_upload(self):
         if not UPLOADS_ENABLED:
