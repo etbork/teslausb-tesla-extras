@@ -908,6 +908,14 @@ APP_HTML = r"""<!doctype html>
   .audio-play-btn { min-width: 82px; }
   .audio-preview { width: min(260px, 34vw); height: 30px; vertical-align: middle; }
   .audio-row-actions { display: inline-flex; align-items: center; justify-content: flex-end; gap: 8px; }
+  .audio-panel { display: grid; grid-template-columns: auto 1fr; gap: 14px; align-items: center; padding: 14px; margin: 0 0 18px; border: 1px solid var(--hairline); border-radius: 10px; background: var(--surface); }
+  .audio-panel-controls { display: flex; gap: 6px; align-items: center; }
+  .audio-panel-main { min-width: 0; }
+  .audio-panel-title { margin: 0 0 8px; font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .audio-panel-title.idle { color: var(--muted); }
+  .audio-panel audio { width: 100%; height: 32px; display: block; }
+  .audio-note { display: flex; gap: 10px; align-items: flex-start; color: var(--muted); font-size: 12px; line-height: 1.45; padding: 12px 14px; margin: -4px 0 18px; border: 1px solid color-mix(in oklch, var(--warn) 22%, var(--hairline)); border-radius: 10px; background: color-mix(in oklch, var(--warn) 7%, var(--surface)); }
+  .audio-note svg { flex: 0 0 auto; color: var(--warn); margin-top: 1px; }
   .file-name { color: var(--text); }
   .file-empty { padding: 60px; text-align: center; color: var(--muted); }
   .file-empty-h { font-size: 14px; color: var(--text); margin-bottom: 4px; }
@@ -968,10 +976,6 @@ APP_HTML = r"""<!doctype html>
   .video-shell { width: min(1040px, 100%); display: grid; gap: 10px; }
   .video-close { justify-self: end; }
   .video-player { width: 100%; max-height: min(76vh, 720px); background: black; border: 1px solid var(--hairline-2); border-radius: 8px; }
-  .audio-player { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 25; width: min(720px, calc(100% - 28px)); display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; padding: 10px; border-radius: 12px; border: 1px solid var(--hairline-2); background: color-mix(in srgb, var(--surface) 94%, black); box-shadow: 0 18px 60px rgba(0,0,0,.35); }
-  .audio-player.hidden { display: none; }
-  .audio-player-title { min-width: 0; color: var(--text); font-size: 12px; margin: 0 0 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .audio-player audio { width: 100%; height: 32px; display: block; }
 
   /* Responsive */
   @media (max-width: 900px) {
@@ -1012,8 +1016,9 @@ APP_HTML = r"""<!doctype html>
     .file-tbl-actions { min-width: 0; text-align: left; margin-top: 10px; }
     .audio-row-actions { width: 100%; justify-content: flex-start; }
     .audio-preview { width: min(245px, 68vw); }
-    .audio-player { grid-template-columns: 1fr; bottom: 10px; width: calc(100% - 20px); }
-    .audio-player .icon-btn { justify-self: end; }
+    .audio-panel { grid-template-columns: 1fr; gap: 10px; }
+    .audio-panel-controls { display: grid; grid-template-columns: repeat(3, 1fr); }
+    .audio-panel-controls .icon-btn { width: 100%; }
     .clip-expanded, .clip-pager-row { display: block !important; padding: 0; }
     .clip-expanded td { padding: 0 12px 12px; }
     .clip-pager-row td { padding: 0; }
@@ -1086,6 +1091,7 @@ APP_HTML = r"""<!doctype html>
       </div>
       <div id="musicBanner"></div>
       <div id="musicUpload"></div>
+      <div id="musicPlayer"></div>
       <div id="musicRejections" class="rj"></div>
       <div class="card" style="padding: 0; overflow: hidden;">
         <table class="file-tbl">
@@ -1118,6 +1124,7 @@ APP_HTML = r"""<!doctype html>
       </div>
       <div id="lightshowBanner"></div>
       <div id="lightshowUpload"></div>
+      <div id="lightshowPlayer"></div>
       <div id="lightshowRejections" class="rj"></div>
       <div class="card" style="padding: 0; overflow: hidden;">
         <table class="file-tbl">
@@ -1176,18 +1183,6 @@ APP_HTML = r"""<!doctype html>
     <video id="videoPlayer" class="video-player" controls playsinline preload="metadata"></video>
   </div>
 </div>
-<div id="audioPlayer" class="audio-player hidden">
-  <div>
-    <div id="audioPlayerTitle" class="audio-player-title"></div>
-    <audio id="sharedAudio" controls preload="none"></audio>
-  </div>
-  <button class="icon-btn" type="button" title="Close player" onclick="closeAudioPlayer()">
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M18 6 6 18M6 6l12 12"/>
-    </svg>
-  </button>
-</div>
-
 <script>
 /* ============== icon paths ============== */
 const ICONS = {
@@ -1241,6 +1236,10 @@ let dashcamItems = [];
 let expandedClipGroups = new Set();
 let musicItems = [];
 let lightshowItems = [];
+let audioState = {
+  music: { index: -1, playing: false },
+  lightshow: { index: -1, playing: false }
+};
 let rejections = { music: [], lightshow: [] };
 let settingsSection = "connection";
 let sessionDeadline = 0;
@@ -1288,25 +1287,85 @@ function pauseAllMedia() {
   });
 }
 
-function playAudio(url, title) {
-  pauseAllMedia();
-  const wrap = document.getElementById("audioPlayer");
-  const player = document.getElementById("sharedAudio");
-  document.getElementById("audioPlayerTitle").textContent = title || "Audio";
-  if (player.src !== new URL(url, window.location.href).href) {
-    player.src = url;
-  }
-  wrap.classList.remove("hidden");
-  player.play().catch(() => toast("Could not play this audio file", "err"));
+function audioItemsFor(pageId) {
+  const items = pageId === "lightshow" ? lightshowItems : musicItems;
+  return (items || []).filter(isAudio);
 }
 
-function closeAudioPlayer() {
-  const wrap = document.getElementById("audioPlayer");
-  const player = document.getElementById("sharedAudio");
-  player.pause();
-  player.removeAttribute("src");
-  player.load();
-  wrap.classList.add("hidden");
+function renderAudioPanel(pageId) {
+  const wrap = document.getElementById(`${pageId}Player`);
+  if (!wrap) return;
+  const items = audioItemsFor(pageId);
+  const state = audioState[pageId] || { index: -1, playing: false };
+  const item = items[state.index] || null;
+  const title = item ? item.name : "Not playing";
+  const playerId = `${pageId}Audio`;
+  wrap.innerHTML = `<div class="audio-panel">
+    <div class="audio-panel-controls">
+      <button class="icon-btn" type="button" title="Previous" ${items.length ? "" : "disabled"} onclick="playAudioOffset(${jsStr(pageId)}, -1)">${svgIcon("back", 15)}</button>
+      <button class="icon-btn" type="button" title="${state.playing ? "Pause" : "Play"}" ${item ? "" : "disabled"} onclick="togglePanelAudio(${jsStr(pageId)})">${state.playing ? svgIcon("pause", 15) : svgIcon("play", 15)}</button>
+      <button class="icon-btn" type="button" title="Next" ${items.length ? "" : "disabled"} onclick="playAudioOffset(${jsStr(pageId)}, 1)">${svgIcon("play", 15)}</button>
+    </div>
+    <div class="audio-panel-main">
+      <div class="audio-panel-title ${item ? "" : "idle"}">${esc(title)}</div>
+      <audio id="${playerId}" controls preload="none" ${item ? `src="${inlineUrl(item.download)}"` : ""} onended="playAudioOffset(${jsStr(pageId)}, 1)"></audio>
+    </div>
+  </div>
+  <div class="audio-note">${svgIcon("warn", 15, 1.7)}<span>Large lossless files can lag on phones. MP3 or AAC previews usually play smoother, especially away from hotspot mode.</span></div>`;
+}
+
+function playAudio(pageId, index) {
+  const items = audioItemsFor(pageId);
+  if (!items.length) return;
+  const nextIndex = Math.max(0, Math.min(items.length - 1, Number(index) || 0));
+  pauseAllMedia();
+  audioState[pageId] = { index: nextIndex, playing: true };
+  renderAudioPanel(pageId);
+  const player = document.getElementById(`${pageId}Audio`);
+  if (player) player.play().catch(() => toast("Could not play this audio file", "err"));
+}
+
+function playAudioOffset(pageId, delta) {
+  const items = audioItemsFor(pageId);
+  if (!items.length) return;
+  const current = audioState[pageId]?.index ?? -1;
+  const base = current >= 0 ? current : 0;
+  const next = (base + delta + items.length) % items.length;
+  playAudio(pageId, next);
+}
+
+function togglePanelAudio(pageId) {
+  const player = document.getElementById(`${pageId}Audio`);
+  if (!player) return;
+  if (player.paused) {
+    audioState[pageId].playing = true;
+    renderAudioPanel(pageId);
+    const nextPlayer = document.getElementById(`${pageId}Audio`);
+    if (nextPlayer) nextPlayer.play().catch(() => toast("Could not play this audio file", "err"));
+  } else {
+    player.pause();
+    audioState[pageId].playing = false;
+    renderAudioPanel(pageId);
+  }
+}
+
+function audioIndexFor(pageId, item) {
+  return audioItemsFor(pageId).findIndex(candidate => candidate.path === item.path);
+}
+
+function pausePanelAudio() {
+  for (const pageId of ["music", "lightshow"]) {
+    const player = document.getElementById(`${pageId}Audio`);
+    if (player) player.pause();
+    audioState[pageId].playing = false;
+    renderAudioPanel(pageId);
+  }
+}
+
+function playLegacyAudio(url, title) {
+  pauseAllMedia();
+  const scratch = new Audio(url);
+  scratch.play().catch(() => toast("Could not play this audio file", "err"));
 }
 
 function playVideo(url, title) {
@@ -1529,17 +1588,28 @@ function previewCell(item, drive) {
   return svgIcon(item.is_dir ? "folder" : "file", 15, 1.4);
 }
 
-function audioAction(item) {
-  return isAudio(item) ? `<button class="btn btn-sm audio-play-btn" type="button" onclick="event.stopPropagation(); playAudio(${jsStr(inlineUrl(item.download))}, ${jsStr(item.name)})">${svgIcon("play", 14)}<span>Play</span></button>` : "";
+function audioPageFor(drive) {
+  if (drive === "music") return "music";
+  if (drive === "sounds" && currentPage === "lightshow") return "lightshow";
+  return "";
+}
+
+function audioAction(item, pageId) {
+  const index = pageId ? audioIndexFor(pageId, item) : -1;
+  return isAudio(item) && pageId && index >= 0
+    ? `<button class="btn btn-sm audio-play-btn" type="button" onclick="event.stopPropagation(); playAudio(${jsStr(pageId)}, ${index})">${svgIcon("play", 14)}<span>Play</span></button>`
+    : "";
 }
 
 function fileRow(item, drive, onDelete, onOpen) {
+  const audioPage = audioPageFor(drive);
+  const audioIndex = audioPage ? audioIndexFor(audioPage, item) : -1;
   const playAction = isVideo(item)
     ? `<button class="icon-btn" title="Play" onclick="event.stopPropagation(); playVideo(${jsStr(inlineUrl(item.download))}, ${jsStr(item.name)})">${svgIcon("play", 14)}</button>`
     : "";
   const actions = item.is_dir
     ? ""
-    : `<span class="audio-row-actions">${audioAction(item)}
+    : `<span class="audio-row-actions">${audioAction(item, audioPage)}
        ${playAction}
        <a class="icon-btn" href="${item.download}" title="Download" onclick="event.stopPropagation()">${svgIcon("download", 14)}</a>
        ${status.deletes_enabled && status.session_active ? `<button class="icon-btn icon-btn-danger" title="Delete" onclick="event.stopPropagation(); ${onDelete}">${svgIcon("trash", 14)}</button>` : ""}</span>`;
@@ -1547,8 +1617,8 @@ function fileRow(item, drive, onDelete, onOpen) {
     ? `onclick="${onOpen || ""}"`
     : isVideo(item)
       ? `onclick="playVideo(${jsStr(inlineUrl(item.download))}, ${jsStr(item.name)})"`
-      : isAudio(item)
-        ? `onclick="playAudio(${jsStr(inlineUrl(item.download))}, ${jsStr(item.name)})"`
+      : isAudio(item) && audioPage && audioIndex >= 0
+        ? `onclick="playAudio(${jsStr(audioPage)}, ${audioIndex})"`
       : `onclick="window.location.href='${item.download}'"`;
   return `<tr ${click}>
     <td class="file-tbl-icon">${previewCell(item, drive)}</td>
@@ -1771,6 +1841,7 @@ async function loadFolder(pageId, drive, path, tableId, infoId, setItems) {
     const list = await api(`/api/list?drive=${drive}&path=${encodeURIComponent(path)}`);
     const items = list.items || [];
     setItems(items);
+    if (pageId === "music" || pageId === "lightshow") renderAudioPanel(pageId);
     if (items.length === 0) {
       tbody.innerHTML = emptyRow("No files yet", "Drop files into the zone above to add them.");
     } else {
@@ -2017,7 +2088,7 @@ function renderSettings() {
 function showPage(page) {
   if (page !== currentPage) {
     pauseAllMedia();
-    closeAudioPlayer();
+    pausePanelAudio();
     closeVideo();
   }
   currentPage = page;
