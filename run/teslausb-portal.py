@@ -180,6 +180,26 @@ def directory_size(root):
     return total
 
 
+def directory_thumbnail(root, rel):
+    target, rel = safe_join(root, rel)
+    if not target.is_dir():
+        return ""
+    candidates = [
+        "thumb.png",
+        "thumb.jpg",
+        "thumb.jpeg",
+        "thumbnail.png",
+        "thumbnail.jpg",
+        "thumbnail.jpeg",
+    ]
+    for name in candidates:
+        candidate = target / name
+        if candidate.is_file():
+            child_rel = posixpath.join(rel, name) if rel else name
+            return f"/download?drive=cam&path={quote(child_rel)}"
+    return ""
+
+
 def count_files_under(root, rel):
     target, _ = safe_join(root, rel)
     return count_files(target) if target.exists() else 0
@@ -328,6 +348,7 @@ def list_directory(drive_key, rel):
         is_dir = child.is_dir()
         size = directory_size(child) if is_dir else stat.st_size
         child_rel = posixpath.join(rel, child.name) if rel else child.name
+        thumbnail = directory_thumbnail(root, child_rel) if is_dir and drive_key == "cam" else ""
         items.append({
             "name": child.name,
             "path": child_rel,
@@ -336,6 +357,7 @@ def list_directory(drive_key, rel):
             "size_label": format_bytes(size),
             "modified": int(stat.st_mtime),
             "download": "" if is_dir else f"/download?drive={quote(drive_key)}&path={quote(child_rel)}",
+            "thumbnail": thumbnail,
             "art": "" if is_dir or child.suffix.lower() not in {".mp3", ".flac", ".m4a", ".aac", ".mp4"} else f"/art?drive={quote(drive_key)}&path={quote(child_rel)}",
         })
     parent = posixpath.dirname(rel) if rel else ""
@@ -1324,6 +1346,7 @@ function previewCell(item, drive) {
       ? `<span class="album-wrap"><img class="album-art" src="${item.art}" alt="" loading="lazy" onerror="this.parentElement.classList.add('art-missing')"><span class="album-fallback">${svgIcon("music", 17)}</span></span>`
       : `<span class="album-fallback">${svgIcon("music", 17)}</span>`;
   }
+  if (item.is_dir && item.thumbnail) return `<img class="dash-thumb" src="${item.thumbnail}" alt="" loading="lazy">`;
   if (isVideo(item)) return `<video class="dash-thumb" src="${item.download}#t=0.1" muted preload="metadata" playsinline></video>`;
   if (isImage(item)) return `<img class="dash-thumb" src="${item.download}" alt="">`;
   return svgIcon(item.is_dir ? "folder" : "file", 15, 1.4);
