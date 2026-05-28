@@ -649,7 +649,8 @@ class PortalHandler(BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         if status == HTTPStatus.PARTIAL_CONTENT:
             self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
-        self.send_header("Content-Disposition", f'attachment; filename="{target.name}"')
+        disposition = "inline" if query.get("inline", ["0"])[0] == "1" else "attachment"
+        self.send_header("Content-Disposition", f'{disposition}; filename="{target.name}"')
         self.end_headers()
         if head_only:
             return
@@ -895,6 +896,7 @@ APP_HTML = r"""<!doctype html>
   .clip-files { display: grid; gap: 8px; padding: 10px 0 0 102px; }
   .clip-file { display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; padding: 8px 10px; border: 1px solid var(--hairline); border-radius: 7px; background: var(--bg); }
   .clip-file-actions { display: flex; gap: 4px; align-items: center; }
+  .clip-more { text-align: center; padding: 18px; }
   .album-wrap { width: 38px; height: 38px; display: block; position: relative; overflow: hidden; border-radius: 6px; }
   .album-art { width: 38px; height: 38px; object-fit: cover; border-radius: 6px; background: var(--bg); border: 1px solid var(--hairline); display: block; }
   .album-fallback { width: 38px; height: 38px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--hairline); display: grid; place-items: center; color: var(--muted); }
@@ -958,6 +960,11 @@ APP_HTML = r"""<!doctype html>
   .splash-sub, .extend-sub { color: var(--muted); margin: 14px 0 22px; }
   .splash-actions, .extend-actions { display: flex; flex-wrap: wrap; gap: 10px; }
   .session-timer { color: var(--warn); }
+  .video-modal { position: fixed; inset: 0; z-index: 35; display: grid; place-items: center; padding: 18px; background: rgba(0,0,0,.82); }
+  .video-modal.hidden { display: none; }
+  .video-shell { width: min(1040px, 100%); display: grid; gap: 10px; }
+  .video-close { justify-self: end; }
+  .video-player { width: 100%; max-height: min(76vh, 720px); background: black; border: 1px solid var(--hairline-2); border-radius: 8px; }
 
   /* Responsive */
   @media (max-width: 900px) {
@@ -973,6 +980,8 @@ APP_HTML = r"""<!doctype html>
     .uz { grid-template-columns: 1fr; text-align: left; gap: 14px; padding: 18px; }
     .uz-actions { align-items: flex-start; }
     .topbar-r .status-chip:nth-child(n+2) { display: none; }
+    .file-tbl-actions { min-width: 260px; }
+    .audio-preview { width: min(220px, 38vw); }
   }
   @media (max-width: 560px) {
     .home-tiles { grid-template-columns: 1fr; }
@@ -982,6 +991,27 @@ APP_HTML = r"""<!doctype html>
     .mn { padding: 20px 16px 60px; }
     .page-title { font-size: 36px; }
     .home-title { font-size: 36px; }
+    .topbar { grid-template-columns: 1fr auto; gap: 10px; }
+    .topbar-r { gap: 6px; }
+    .topbar-r .status-chip { display: none; }
+    .btn { padding: 9px 12px; }
+    .folder-tab { padding: 12px; }
+    .file-tbl, .file-tbl tbody, .file-tbl tr, .file-tbl td { display: block; width: 100%; }
+    .file-tbl thead { display: none; }
+    .file-tbl tr { display: grid; grid-template-columns: 58px 1fr; gap: 0 8px; padding: 12px; border-bottom: 1px solid var(--hairline); }
+    .file-tbl td { padding: 0; border-bottom: 0; }
+    .file-tbl-icon { grid-row: 1 / span 3; width: auto; }
+    .file-name { overflow-wrap: anywhere; align-self: center; }
+    .file-tbl-actions { min-width: 0; text-align: left; margin-top: 10px; }
+    .audio-row-actions { width: 100%; justify-content: flex-start; }
+    .audio-preview { width: min(245px, 68vw); }
+    .clip-expanded { display: block !important; padding: 0; }
+    .clip-expanded td { padding: 0 12px 12px; }
+    .clip-files { padding: 8px 0 0; }
+    .clip-file { grid-template-columns: 1fr auto; }
+    .clip-file-actions { grid-column: 1 / -1; justify-content: flex-start; }
+    .splash-title, .extend-title { font-size: 30px; }
+    .splash-card, .extend-card { padding: 22px; }
   }
 
   svg { display: block; }
@@ -1127,6 +1157,12 @@ APP_HTML = r"""<!doctype html>
     </div>
   </div>
 </div>
+<div id="videoModal" class="video-modal hidden" onclick="closeVideo()">
+  <div class="video-shell" onclick="event.stopPropagation()">
+    <button class="btn video-close" type="button" onclick="closeVideo()">Close</button>
+    <video id="videoPlayer" class="video-player" controls playsinline preload="metadata"></video>
+  </div>
+</div>
 
 <script>
 /* ============== icon paths ============== */
@@ -1185,6 +1221,7 @@ let rejections = { music: [], lightshow: [] };
 let settingsSection = "connection";
 let sessionDeadline = 0;
 let extendPromptShown = false;
+let dashcamVisibleCount = 80;
 const SESSION_MS = 5 * 60 * 1000;
 const EXTEND_PROMPT_MS = 2 * 60 * 1000;
 
@@ -1204,6 +1241,7 @@ function extOf(name) { return String(name || "").split(".").pop().toLowerCase();
 function isAudio(item) { return !item.is_dir && ["mp3","wav","m4a","aac","flac"].includes(extOf(item.name)); }
 function isVideo(item) { return !item.is_dir && ["mp4","mov","m4v"].includes(extOf(item.name)); }
 function isImage(item) { return !item.is_dir && ["jpg","jpeg","png","webp"].includes(extOf(item.name)); }
+function inlineUrl(url) { return `${url}${String(url).includes("?") ? "&" : "?"}inline=1`; }
 function toast(msg, kind) {
   const el = document.getElementById("toast");
   el.textContent = msg;
@@ -1217,6 +1255,31 @@ async function api(path, options) {
   const data = ct.includes("application/json") ? await res.json() : { error: await res.text() };
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
+}
+
+function pauseAllMedia() {
+  document.querySelectorAll("audio, video").forEach(el => {
+    try { el.pause(); } catch (_) { /* ignore */ }
+  });
+}
+
+function playVideo(url, title) {
+  pauseAllMedia();
+  const modal = document.getElementById("videoModal");
+  const player = document.getElementById("videoPlayer");
+  player.src = url;
+  player.title = title || "Video";
+  modal.classList.remove("hidden");
+  player.play().catch(() => {});
+}
+
+function closeVideo() {
+  const modal = document.getElementById("videoModal");
+  const player = document.getElementById("videoPlayer");
+  player.pause();
+  player.removeAttribute("src");
+  player.load();
+  modal.classList.add("hidden");
 }
 
 /* ============== status refresh ============== */
@@ -1233,6 +1296,18 @@ async function refresh() {
     if (currentPage === "lightshow") await loadFolder("lightshow", "sounds", "LightShow", "lightshowTable", "lightshowInfo", v => lightshowItems = v);
     if (currentPage === "chime")     await loadChime();
     if (currentPage === "settings")  renderSettings();
+  } catch (e) {
+    toast(e.message, "err");
+  }
+}
+
+async function refreshStatusOnly() {
+  try {
+    status = await api("/api/status");
+    renderTopbarStatus();
+    reconcileSessionTimer();
+    if (currentPage === "home") renderHome();
+    if (currentPage === "settings") renderSettings();
   } catch (e) {
     toast(e.message, "err");
   }
@@ -1403,24 +1478,30 @@ function previewCell(item, drive) {
       : `<span class="album-fallback">${svgIcon("music", 17)}</span>`;
   }
   if (item.is_dir && item.thumbnail) return `<img class="dash-thumb" src="${item.thumbnail}" alt="" loading="lazy">`;
-  if (isVideo(item)) return `<video class="dash-thumb" src="${item.download}#t=0.1" muted preload="metadata" playsinline></video>`;
-  if (isImage(item)) return `<img class="dash-thumb" src="${item.download}" alt="">`;
+  if (isVideo(item)) return `<button class="dash-thumb icon-btn" type="button" title="Play video" onclick="event.stopPropagation(); playVideo(${jsStr(inlineUrl(item.download))}, ${jsStr(item.name)})">${svgIcon("play", 17)}</button>`;
+  if (isImage(item)) return `<img class="dash-thumb" src="${inlineUrl(item.download)}" alt="" loading="lazy">`;
   return svgIcon(item.is_dir ? "folder" : "file", 15, 1.4);
 }
 
 function audioAction(item) {
-  return isAudio(item) ? `<audio class="audio-preview" controls preload="none" src="${item.download}" onclick="event.stopPropagation()"></audio>` : "";
+  return isAudio(item) ? `<audio class="audio-preview" controls preload="none" src="${inlineUrl(item.download)}" onclick="event.stopPropagation()"></audio>` : "";
 }
 
 function fileRow(item, drive, onDelete, onOpen) {
+  const playAction = isVideo(item)
+    ? `<button class="icon-btn" title="Play" onclick="event.stopPropagation(); playVideo(${jsStr(inlineUrl(item.download))}, ${jsStr(item.name)})">${svgIcon("play", 14)}</button>`
+    : "";
   const actions = item.is_dir
     ? ""
     : `<span class="audio-row-actions">${audioAction(item)}
+       ${playAction}
        <a class="icon-btn" href="${item.download}" title="Download" onclick="event.stopPropagation()">${svgIcon("download", 14)}</a>
        ${status.deletes_enabled && status.session_active ? `<button class="icon-btn icon-btn-danger" title="Delete" onclick="event.stopPropagation(); ${onDelete}">${svgIcon("trash", 14)}</button>` : ""}</span>`;
   const click = item.is_dir
     ? `onclick="${onOpen || ""}"`
-    : `onclick="window.location.href='${item.download}'"`;
+    : isVideo(item)
+      ? `onclick="playVideo(${jsStr(inlineUrl(item.download))}, ${jsStr(item.name)})"`
+      : `onclick="window.location.href='${item.download}'"`;
   return `<tr ${click}>
     <td class="file-tbl-icon">${previewCell(item, drive)}</td>
     <td class="file-name">${esc(item.name)}</td>
@@ -1481,8 +1562,8 @@ function groupDashcamItems(items) {
 
 function clipStack(files) {
   const front = files.find(file => cameraKey(file.name) === "front");
-  const ordered = front ? [front, ...files.filter(file => file !== front)] : files;
-  return `<span class="clip-stack">${ordered.slice(0, 3).map(file => `<video class="dash-thumb" src="${file.download}#t=0.1" muted preload="metadata" playsinline></video>`).join("")}</span>`;
+  const file = front || files[0];
+  return `<span class="clip-stack"><button class="dash-thumb icon-btn" type="button" title="Play front camera" onclick="event.stopPropagation(); playVideo(${jsStr(inlineUrl(file.download))}, ${jsStr(file.name)})">${svgIcon("play", 17)}</button></span>`;
 }
 
 function clipGroupRow(group) {
@@ -1494,6 +1575,7 @@ function clipGroupRow(group) {
       <span>${esc(cameraLabel(file.name))}</span>
       <span class="mono num-faint">${esc(file.size_label)}</span>
       <span class="clip-file-actions">
+        <button class="icon-btn" title="Play" onclick="event.stopPropagation(); playVideo(${jsStr(inlineUrl(file.download))}, ${jsStr(file.name)})">${svgIcon("play", 14)}</button>
         <a class="icon-btn" href="${file.download}" title="Download" onclick="event.stopPropagation()">${svgIcon("download", 14)}</a>
         ${status.deletes_enabled && status.session_active ? `<button class="icon-btn icon-btn-danger" title="Delete" onclick="event.stopPropagation(); deleteItem('cam', ${jsStr(file.path)})">${svgIcon("trash", 14)}</button>` : ""}
       </span>
@@ -1516,6 +1598,7 @@ function toggleClipGroup(key) {
 function openDashcamFolder(encodedPath) {
   dashcamFolder = decodeURIComponent(encodedPath);
   expandedClipGroups.clear();
+  dashcamVisibleCount = 80;
   loadDashcam();
 }
 
@@ -1525,7 +1608,9 @@ function renderDashcamRows() {
     tbody.innerHTML = emptyRow("No clips here", "The car writes here when it records.");
     return;
   }
-  tbody.innerHTML = groupDashcamItems(dashcamItems).map(entry => {
+  const entries = groupDashcamItems(dashcamItems);
+  const visible = entries.slice(0, dashcamVisibleCount);
+  let rows = visible.map(entry => {
     if (entry.type === "group") return clipGroupRow(entry);
     const it = entry.item;
     return fileRow(
@@ -1535,6 +1620,10 @@ function renderDashcamRows() {
       `openDashcamFolder('${encodeURIComponent(it.path)}')`
     );
   }).join("");
+  if (entries.length > visible.length) {
+    rows += `<tr><td colspan="4" class="clip-more"><button class="btn" type="button" onclick="dashcamVisibleCount += 80; renderDashcamRows()">Load more clips (${entries.length - visible.length} left)</button></td></tr>`;
+  }
+  tbody.innerHTML = rows;
 }
 
 /* ============== DASH CAM ============== */
@@ -1545,7 +1634,7 @@ async function loadDashcam() {
 
   // folder tabs
   document.getElementById("dashcamFolders").innerHTML = DASHCAM_FOLDERS.map(f => `
-    <button class="folder-tab ${dashcamFolder === f.key ? "on" : ""}" onclick="dashcamFolder='${f.key}'; loadDashcam();">
+    <button class="folder-tab ${dashcamFolder === f.key ? "on" : ""}" onclick="dashcamFolder='${f.key}'; expandedClipGroups.clear(); dashcamVisibleCount = 80; loadDashcam();">
       <div class="folder-tab-l">${esc(f.label)}</div>
     </button>
   `).join("");
@@ -1805,7 +1894,7 @@ async function loadChime() {
         <div class="lc-info-r"><span class="lc-info-k">UPDATED</span><span class="lc-info-v mono">${new Date(chime.modified * 1000).toLocaleString()}</span></div>
       </div>
       <div class="lc-actions">
-        <audio class="audio-preview" controls preload="none" src="${chime.download}"></audio>
+        <audio class="audio-preview" controls preload="none" src="${inlineUrl(chime.download)}"></audio>
         <a class="btn" href="${chime.download}">${svgIcon("download", 15)}<span>Download</span></a>
         ${status.deletes_enabled && status.session_active ? `<button class="btn btn-danger" onclick="deleteItem('sounds',${jsStr(chime.path)})">${svgIcon("trash", 15)}<span>Remove from car</span></button>` : ""}
       </div>
@@ -1859,6 +1948,10 @@ function renderSettings() {
 
 /* ============== nav ============== */
 function showPage(page) {
+  if (page !== currentPage) {
+    pauseAllMedia();
+    closeVideo();
+  }
   currentPage = page;
   document.querySelectorAll("main > section").forEach(el => el.classList.add("hidden"));
   const target = document.getElementById(`page-${page}`);
@@ -1871,7 +1964,11 @@ function showPage(page) {
 /* boot */
 refresh();
 setInterval(timerTick, 1000);
-setInterval(() => { if (currentPage !== "settings") refresh().catch(() => {}); }, 15000);
+setInterval(() => {
+  const mediaPages = ["dashcam", "photobooth", "music", "lightshow", "chime"];
+  if (mediaPages.includes(currentPage)) refreshStatusOnly().catch(() => {});
+  else refresh().catch(() => {});
+}, 15000);
 </script>
 </body>
 </html>"""
