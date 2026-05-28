@@ -1391,7 +1391,7 @@ function clipStack(files) {
 function clipGroupRow(group) {
   const totalSize = group.files.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
   const expanded = expandedClipGroups.has(group.key);
-  const summary = `${group.files.length} clips · ${formatBytes(totalSize)}`;
+  const summary = `${group.files.length} clips · ${fmtBytes(totalSize)}`;
   const filesHtml = expanded ? `<tr class="clip-expanded"><td colspan="4"><div class="clip-files">
     ${group.files.map(file => `<div class="clip-file">
       <span>${esc(cameraLabel(file.name))}</span>
