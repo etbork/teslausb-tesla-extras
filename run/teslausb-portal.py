@@ -1002,9 +1002,21 @@ APP_HTML = r"""<!doctype html>
   .session-timer { color: var(--warn); }
   .video-modal { position: fixed; inset: 0; z-index: 35; display: grid; place-items: center; padding: 18px; background: rgba(0,0,0,.82); }
   .video-modal.hidden { display: none; }
-  .video-shell { width: min(1040px, 100%); display: grid; gap: 10px; }
-  .video-close { justify-self: end; }
-  .video-player { width: 100%; max-height: min(76vh, 720px); background: black; border: 1px solid var(--hairline-2); border-radius: 8px; }
+  .video-shell { width: min(1040px, 100%); max-height: calc(100vh - 32px); display: grid; gap: 10px; }
+  .video-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .video-title { min-width: 0; font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .video-grid { display: grid; grid-template-areas: ". front ." "left back right"; grid-template-columns: 1fr 1.25fr 1fr; gap: 8px; align-items: center; }
+  .video-cell { min-width: 0; border: 1px solid var(--hairline-2); border-radius: 8px; overflow: hidden; background: black; }
+  .video-cell-front { grid-area: front; }
+  .video-cell-back { grid-area: back; }
+  .video-cell-left { grid-area: left; }
+  .video-cell-right { grid-area: right; }
+  .video-cell-single { grid-column: 1 / -1; }
+  .video-cell-label { display: flex; justify-content: space-between; gap: 8px; padding: 7px 9px; background: var(--surface); color: var(--muted); font-size: 11px; }
+  .video-player { width: 100%; aspect-ratio: 16 / 9; background: black; display: block; object-fit: contain; }
+  .video-controls { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--hairline-2); border-radius: 8px; background: var(--surface); }
+  .video-scrub { width: 100%; min-width: 0; accent-color: var(--text); }
+  .video-time { color: var(--muted); font-size: 11px; }
 
   /* Responsive */
   @media (max-width: 900px) {
@@ -1056,6 +1068,11 @@ APP_HTML = r"""<!doctype html>
     .clip-pager-actions .btn { justify-content: center; }
     .splash-title, .extend-title { font-size: 30px; }
     .splash-card, .extend-card { padding: 22px; }
+    .video-modal { padding: 8px; align-items: start; }
+    .video-shell { max-height: calc(100vh - 16px); overflow: auto; }
+    .video-grid { grid-template-areas: "front" "left" "right" "back"; grid-template-columns: 1fr; }
+    .video-controls { grid-template-columns: auto 1fr; }
+    .video-time { grid-column: 1 / -1; text-align: center; }
   }
 
   svg { display: block; }
@@ -1205,8 +1222,16 @@ APP_HTML = r"""<!doctype html>
 </div>
 <div id="videoModal" class="video-modal hidden" onclick="closeVideo()">
   <div class="video-shell" onclick="event.stopPropagation()">
-    <button class="btn video-close" type="button" onclick="closeVideo()">Close</button>
-    <video id="videoPlayer" class="video-player" controls playsinline preload="metadata"></video>
+    <div class="video-top">
+      <div id="videoTitle" class="video-title mono"></div>
+      <button class="btn video-close" type="button" onclick="closeVideo()">Close</button>
+    </div>
+    <div id="videoGrid" class="video-grid"></div>
+    <div class="video-controls">
+      <button id="videoPlayButton" class="icon-btn" type="button" title="Play / pause" onclick="toggleVideoViewer()">${svgIcon("play", 15)}</button>
+      <input id="videoScrub" class="video-scrub" type="range" min="0" max="0" step="0.1" value="0" oninput="seekVideoViewer(this.value)">
+      <span id="videoTime" class="video-time mono">0:00 / 0:00</span>
+    </div>
   </div>
 </div>
 <script>
@@ -1225,6 +1250,7 @@ const ICONS = {
   warn: "M12 3 2 21h20L12 3Zm0 6v6m0 3v.5",
   check: "M4 12l5 5L20 6",
   play: "M6 4l14 8-14 8z",
+  pause: "M8 5v14M16 5v14",
   x: "M6 6l12 12M18 6 6 18",
 };
 function svgIcon(name, size = 18, stroke = 1.5) {
@@ -1267,6 +1293,7 @@ let settingsSection = "connection";
 let sessionDeadline = 0;
 let extendPromptShown = false;
 let dashcamPage = 1;
+let videoViewer = { playing: false, syncing: false };
 const DASHCAM_PAGE_SIZE = 10;
 const SESSION_MS = 5 * 60 * 1000;
 const EXTEND_PROMPT_MS = 2 * 60 * 1000;
@@ -1320,22 +1347,123 @@ function renderAudioNote(pageId) {
   wrap.innerHTML = `<div class="audio-note">${svgIcon("warn", 15, 1.7)}<span>Large lossless files can lag on phones. MP3 or AAC previews usually play smoother, especially away from hotspot mode.</span></div>`;
 }
 
-function playVideo(url, title) {
+function viewerVideos() {
+  return Array.from(document.querySelectorAll("#videoGrid video"));
+}
+
+function fmtTime(seconds) {
+  const s = Math.max(0, Math.floor(Number(seconds) || 0));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function updateVideoViewerUI() {
+  const videos = viewerVideos();
+  const lead = videos[0];
+  const duration = Math.max(...videos.map(v => Number.isFinite(v.duration) ? v.duration : 0), 0);
+  const current = lead ? lead.currentTime : 0;
+  const scrub = document.getElementById("videoScrub");
+  const time = document.getElementById("videoTime");
+  const btn = document.getElementById("videoPlayButton");
+  scrub.max = duration ? String(duration) : "0";
+  if (!videoViewer.syncing) scrub.value = String(current || 0);
+  time.textContent = `${fmtTime(current)} / ${fmtTime(duration)}`;
+  btn.innerHTML = videoViewer.playing ? svgIcon("pause", 15) : svgIcon("play", 15);
+}
+
+function syncViewerToLead() {
+  if (videoViewer.syncing) return;
+  const videos = viewerVideos();
+  const lead = videos[0];
+  if (!lead) return;
+  for (const video of videos.slice(1)) {
+    if (Math.abs(video.currentTime - lead.currentTime) > 0.28) {
+      video.currentTime = lead.currentTime;
+    }
+  }
+  updateVideoViewerUI();
+}
+
+function seekVideoViewer(value) {
+  videoViewer.syncing = true;
+  const target = Number(value) || 0;
+  for (const video of viewerVideos()) video.currentTime = target;
+  videoViewer.syncing = false;
+  updateVideoViewerUI();
+}
+
+function toggleVideoViewer() {
+  const videos = viewerVideos();
+  if (!videos.length) return;
+  videoViewer.playing = !videoViewer.playing;
+  for (const video of videos) {
+    if (videoViewer.playing) video.play().catch(() => {});
+    else video.pause();
+  }
+  updateVideoViewerUI();
+}
+
+function buildVideoCell(slot, file, single = false) {
+  const key = file ? cameraKey(file.name) : slot;
+  const label = file ? cameraLabel(file.name) : cameraSlotLabel(slot);
+  const fileName = file ? file.name : "Missing";
+  if (!file) {
+    return `<div class="video-cell video-cell-${slot} ${single ? "video-cell-single" : ""}">
+      <div class="video-cell-label"><span>${esc(label)}</span><span class="mono">not found</span></div>
+      <div class="video-player"></div>
+    </div>`;
+  }
+  return `<div class="video-cell video-cell-${slot} ${single ? "video-cell-single" : ""}">
+    <div class="video-cell-label"><span>${esc(label)}</span><span class="mono">${esc(fileName)}</span></div>
+    <video class="video-player" data-camera="${esc(key)}" src="${inlineUrl(file.download)}" playsinline muted preload="metadata"></video>
+  </div>`;
+}
+
+function openVideoViewer(files, title) {
   pauseAllMedia();
+  videoViewer = { playing: false, syncing: false };
   const modal = document.getElementById("videoModal");
-  const player = document.getElementById("videoPlayer");
-  player.src = url;
-  player.title = title || "Video";
+  const grid = document.getElementById("videoGrid");
+  const videoTitle = document.getElementById("videoTitle");
+  const list = Array.isArray(files) ? files : [];
+  videoTitle.textContent = title || "Dashcam viewer";
+  if (list.length <= 1) {
+    grid.innerHTML = buildVideoCell("front", list[0], true);
+  } else {
+    const byCamera = Object.fromEntries(list.map(file => [cameraKey(file.name), file]));
+    grid.innerHTML = [
+      buildVideoCell("front", byCamera.front),
+      buildVideoCell("left", byCamera.left_repeater || byCamera.left_pillar),
+      buildVideoCell("right", byCamera.right_repeater || byCamera.right_pillar),
+      buildVideoCell("back", byCamera.back),
+    ].join("");
+  }
+  for (const video of viewerVideos()) {
+    video.addEventListener("loadedmetadata", updateVideoViewerUI);
+    video.addEventListener("timeupdate", syncViewerToLead);
+    video.addEventListener("pause", () => {
+      if (viewerVideos().every(v => v.paused)) {
+        videoViewer.playing = false;
+        updateVideoViewerUI();
+      }
+    });
+  }
   modal.classList.remove("hidden");
-  player.play().catch(() => {});
+  updateVideoViewerUI();
+}
+
+function playVideo(url, title) {
+  openVideoViewer([{ name: title || "Video", download: url }], title || "Video");
 }
 
 function closeVideo() {
   const modal = document.getElementById("videoModal");
-  const player = document.getElementById("videoPlayer");
-  player.pause();
-  player.removeAttribute("src");
-  player.load();
+  for (const video of viewerVideos()) {
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+  }
+  document.getElementById("videoGrid").innerHTML = "";
+  videoViewer = { playing: false, syncing: false };
   modal.classList.add("hidden");
 }
 
@@ -1582,6 +1710,19 @@ function cameraLabel(name) {
   return match[1].replace(/_/g, " ").replace(/\b\w/g, ch => ch.toUpperCase());
 }
 
+function cameraSlotLabel(slot) {
+  return {
+    front: "Front",
+    back: "Back",
+    left: "Left repeater",
+    right: "Right repeater",
+    left_repeater: "Left repeater",
+    right_repeater: "Right repeater",
+    left_pillar: "Left pillar",
+    right_pillar: "Right pillar",
+  }[slot] || "Camera";
+}
+
 function cameraKey(name) {
   const match = String(name || "").match(/-(back|front|left_pillar|left_repeater|right_pillar|right_repeater)\.mp4$/i);
   return match ? match[1].toLowerCase() : "";
@@ -1620,7 +1761,8 @@ function groupDashcamItems(items) {
 function clipStack(files) {
   const front = files.find(file => cameraKey(file.name) === "front");
   const file = front || files[0];
-  return `<span class="clip-stack"><button class="dash-thumb icon-btn" type="button" title="Play front camera" onclick="event.stopPropagation(); playVideo(${jsStr(inlineUrl(file.download))}, ${jsStr(file.name)})">${svgIcon("play", 17)}</button></span>`;
+  const key = clipGroupKey(file);
+  return `<span class="clip-stack"><button class="dash-thumb icon-btn" type="button" title="Open multi-camera viewer" onclick="event.stopPropagation(); openClipGroupViewer(${jsStr(key)})">${svgIcon("play", 17)}</button></span>`;
 }
 
 function clipGroupRow(group) {
@@ -1642,7 +1784,10 @@ function clipGroupRow(group) {
     <td class="file-tbl-icon">${clipStack(group.files)}</td>
     <td class="file-name"><span class="clip-name"><span>${esc(formatClipTime(group.key))}</span><span class="clip-sub mono">${esc(group.key)}</span></span></td>
     <td class="mono num-faint">${esc(summary)}</td>
-    <td class="file-tbl-actions"><button class="icon-btn" title="${expanded ? "Collapse" : "Expand"}" onclick="event.stopPropagation(); toggleClipGroup(${jsStr(group.key)})">${expanded ? svgIcon("back", 14) : svgIcon("play", 14)}</button></td>
+    <td class="file-tbl-actions">
+      <button class="icon-btn" title="Open multi-camera viewer" onclick="event.stopPropagation(); openClipGroupViewer(${jsStr(group.key)})">${svgIcon("play", 14)}</button>
+      <button class="icon-btn" title="${expanded ? "Collapse" : "Expand"}" onclick="event.stopPropagation(); toggleClipGroup(${jsStr(group.key)})">${expanded ? svgIcon("back", 14) : svgIcon("folder", 14)}</button>
+    </td>
   </tr>${filesHtml}`;
 }
 
@@ -1650,6 +1795,16 @@ function toggleClipGroup(key) {
   if (expandedClipGroups.has(key)) expandedClipGroups.delete(key);
   else expandedClipGroups.add(key);
   renderDashcamRows();
+}
+
+function filesForClipGroup(key) {
+  return dashcamItems.filter(item => clipGroupKey(item) === key);
+}
+
+function openClipGroupViewer(key) {
+  const files = filesForClipGroup(key);
+  if (!files.length) return;
+  openVideoViewer(files, formatClipTime(key));
 }
 
 function openDashcamFolder(encodedPath) {
