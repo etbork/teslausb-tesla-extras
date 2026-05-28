@@ -1124,7 +1124,6 @@ APP_HTML = r"""<!doctype html>
     <div class="extend-actions">
       <button class="btn btn-solid" type="button" onclick="extendSession()">Extend 5 minutes</button>
       <button class="btn btn-danger" type="button" onclick="endSessionNow()">End session now</button>
-      <button class="btn" type="button" onclick="dismissExtendPrompt()">Keep working</button>
     </div>
   </div>
 </div>
@@ -1333,10 +1332,6 @@ async function extendSession() {
     toast("Session extended 5 minutes");
     await refresh();
   } catch (e) { toast(e.message, "err"); }
-}
-
-function dismissExtendPrompt() {
-  document.getElementById("extendModal").classList.add("hidden");
 }
 
 function timerTick() {
