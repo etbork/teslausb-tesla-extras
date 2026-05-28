@@ -786,6 +786,7 @@ APP_HTML = r"""<!doctype html>
   .album-art { width: 38px; height: 38px; object-fit: cover; border-radius: 6px; background: var(--bg); border: 1px solid var(--hairline); display: block; }
   .album-fallback { width: 38px; height: 38px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--hairline); display: grid; place-items: center; color: var(--muted); }
   .audio-preview { width: min(260px, 34vw); height: 30px; vertical-align: middle; }
+  .audio-inline { display: inline-grid; place-items: center; }
   .file-name { color: var(--text); }
   .file-empty { padding: 60px; text-align: center; color: var(--muted); }
   .file-empty-h { font-size: 14px; color: var(--text); margin-bottom: 4px; }
@@ -1068,6 +1069,8 @@ let rejections = { music: [], lightshow: [] };
 let settingsSection = "connection";
 let sessionDeadline = 0;
 let extendPromptShown = false;
+let inlinePlayer = null;
+let inlinePlayerUrl = "";
 const SESSION_MS = 5 * 60 * 1000;
 const EXTEND_PROMPT_MS = 2 * 60 * 1000;
 
@@ -1295,7 +1298,18 @@ function previewCell(item, drive) {
 }
 
 function audioAction(item) {
-  return isAudio(item) ? `<audio class="audio-preview" controls preload="none" src="${item.download}" onclick="event.stopPropagation()"></audio>` : "";
+  return isAudio(item) ? `<button class="icon-btn audio-inline" title="Play preview" onclick="event.stopPropagation(); playInlineAudio(${jsStr(item.download)})">${svgIcon("play", 14)}</button>` : "";
+}
+
+function playInlineAudio(url) {
+  if (!inlinePlayer) inlinePlayer = new Audio();
+  if (inlinePlayerUrl === url && !inlinePlayer.paused) {
+    inlinePlayer.pause();
+    return;
+  }
+  inlinePlayerUrl = url;
+  inlinePlayer.src = url;
+  inlinePlayer.play().catch(() => toast("Could not play this audio file", "err"));
 }
 
 function fileRow(item, drive, onDelete, onOpen) {
