@@ -896,7 +896,9 @@ APP_HTML = r"""<!doctype html>
   .clip-files { display: grid; gap: 8px; padding: 10px 0 0 102px; }
   .clip-file { display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; padding: 8px 10px; border: 1px solid var(--hairline); border-radius: 7px; background: var(--bg); }
   .clip-file-actions { display: flex; gap: 4px; align-items: center; }
-  .clip-more { text-align: center; padding: 18px; }
+  .clip-pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px; }
+  .clip-pager-info { color: var(--muted); font-size: 12px; }
+  .clip-pager-actions { display: flex; gap: 8px; align-items: center; }
   .album-wrap { width: 38px; height: 38px; display: block; position: relative; overflow: hidden; border-radius: 6px; }
   .album-art { width: 38px; height: 38px; object-fit: cover; border-radius: 6px; background: var(--bg); border: 1px solid var(--hairline); display: block; }
   .album-fallback { width: 38px; height: 38px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--hairline); display: grid; place-items: center; color: var(--muted); }
@@ -1005,11 +1007,15 @@ APP_HTML = r"""<!doctype html>
     .file-tbl-actions { min-width: 0; text-align: left; margin-top: 10px; }
     .audio-row-actions { width: 100%; justify-content: flex-start; }
     .audio-preview { width: min(245px, 68vw); }
-    .clip-expanded { display: block !important; padding: 0; }
+    .clip-expanded, .clip-pager-row { display: block !important; padding: 0; }
     .clip-expanded td { padding: 0 12px 12px; }
+    .clip-pager-row td { padding: 0; }
     .clip-files { padding: 8px 0 0; }
     .clip-file { grid-template-columns: 1fr auto; }
     .clip-file-actions { grid-column: 1 / -1; justify-content: flex-start; }
+    .clip-pager { align-items: stretch; flex-direction: column; }
+    .clip-pager-actions { display: grid; grid-template-columns: 1fr 1fr; }
+    .clip-pager-actions .btn { justify-content: center; }
     .splash-title, .extend-title { font-size: 30px; }
     .splash-card, .extend-card { padding: 22px; }
   }
@@ -1221,7 +1227,8 @@ let rejections = { music: [], lightshow: [] };
 let settingsSection = "connection";
 let sessionDeadline = 0;
 let extendPromptShown = false;
-let dashcamVisibleCount = 80;
+let dashcamPage = 1;
+const DASHCAM_PAGE_SIZE = 10;
 const SESSION_MS = 5 * 60 * 1000;
 const EXTEND_PROMPT_MS = 2 * 60 * 1000;
 
@@ -1598,8 +1605,14 @@ function toggleClipGroup(key) {
 function openDashcamFolder(encodedPath) {
   dashcamFolder = decodeURIComponent(encodedPath);
   expandedClipGroups.clear();
-  dashcamVisibleCount = 80;
+  dashcamPage = 1;
   loadDashcam();
+}
+
+function setDashcamPage(page) {
+  dashcamPage = Math.max(1, Number(page) || 1);
+  expandedClipGroups.clear();
+  renderDashcamRows();
 }
 
 function renderDashcamRows() {
@@ -1609,7 +1622,10 @@ function renderDashcamRows() {
     return;
   }
   const entries = groupDashcamItems(dashcamItems);
-  const visible = entries.slice(0, dashcamVisibleCount);
+  const totalPages = Math.max(1, Math.ceil(entries.length / DASHCAM_PAGE_SIZE));
+  dashcamPage = Math.min(Math.max(1, dashcamPage), totalPages);
+  const start = (dashcamPage - 1) * DASHCAM_PAGE_SIZE;
+  const visible = entries.slice(start, start + DASHCAM_PAGE_SIZE);
   let rows = visible.map(entry => {
     if (entry.type === "group") return clipGroupRow(entry);
     const it = entry.item;
@@ -1620,8 +1636,18 @@ function renderDashcamRows() {
       `openDashcamFolder('${encodeURIComponent(it.path)}')`
     );
   }).join("");
-  if (entries.length > visible.length) {
-    rows += `<tr><td colspan="4" class="clip-more"><button class="btn" type="button" onclick="dashcamVisibleCount += 80; renderDashcamRows()">Load more clips (${entries.length - visible.length} left)</button></td></tr>`;
+  if (totalPages > 1) {
+    const first = start + 1;
+    const last = Math.min(entries.length, start + visible.length);
+    rows += `<tr class="clip-pager-row"><td colspan="4">
+      <div class="clip-pager">
+        <div class="clip-pager-info mono">Showing ${first}-${last} of ${entries.length} · page ${dashcamPage} of ${totalPages}</div>
+        <div class="clip-pager-actions">
+          <button class="btn" type="button" ${dashcamPage <= 1 ? "disabled" : ""} onclick="setDashcamPage(${dashcamPage - 1})">${svgIcon("back", 14)}<span>Previous</span></button>
+          <button class="btn" type="button" ${dashcamPage >= totalPages ? "disabled" : ""} onclick="setDashcamPage(${dashcamPage + 1})"><span>Next</span>${svgIcon("play", 14)}</button>
+        </div>
+      </div>
+    </td></tr>`;
   }
   tbody.innerHTML = rows;
 }
@@ -1634,7 +1660,7 @@ async function loadDashcam() {
 
   // folder tabs
   document.getElementById("dashcamFolders").innerHTML = DASHCAM_FOLDERS.map(f => `
-    <button class="folder-tab ${dashcamFolder === f.key ? "on" : ""}" onclick="dashcamFolder='${f.key}'; expandedClipGroups.clear(); dashcamVisibleCount = 80; loadDashcam();">
+    <button class="folder-tab ${dashcamFolder === f.key ? "on" : ""}" onclick="dashcamFolder='${f.key}'; expandedClipGroups.clear(); dashcamPage = 1; loadDashcam();">
       <div class="folder-tab-l">${esc(f.label)}</div>
     </button>
   `).join("");
