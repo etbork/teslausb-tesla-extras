@@ -162,6 +162,52 @@ def count_files(root):
     return total
 
 
+def count_files_under(root, rel):
+    target, _ = safe_join(root, rel)
+    return count_files(target) if target.exists() else 0
+
+
+def count_light_shows(root):
+    target, _ = safe_join(root, "LightShow")
+    if not target.exists():
+        return 0
+    shows = set()
+    try:
+        for child in target.iterdir():
+            if not child.is_file():
+                continue
+            suffix = child.suffix.lower()
+            if suffix in {".fseq", ".mp3", ".wav"}:
+                shows.add(child.stem.lower())
+    except OSError:
+        return 0
+    return len(shows)
+
+
+def home_counts():
+    counts = {"dashcam": None, "photobooth": None, "music": None, "lightshow": None, "chime": None}
+    cam_root = DRIVES["cam"]["root"]
+    sounds_root = DRIVES["sounds"]["root"]
+    music_root = DRIVES["music"]["root"]
+    if cam_root.exists():
+        counts["dashcam"] = sum(count_files_under(cam_root, rel) for rel in (
+            "TeslaCam/RecentClips",
+            "TeslaCam/SavedClips",
+            "TeslaCam/SentryClips",
+            "TeslaCam/EncryptedClips",
+        ))
+        counts["photobooth"] = count_files_under(cam_root, "TeslaCam/Photobooth")
+    if music_root.exists():
+        counts["music"] = count_files_under(music_root, "Music")
+    if sounds_root.exists():
+        counts["lightshow"] = count_light_shows(sounds_root)
+        try:
+            counts["chime"] = 1 if (sounds_root / "LockChime.wav").exists() else 0
+        except OSError:
+            counts["chime"] = 0
+    return counts
+
+
 def session_deadline():
     with SESSION_DEADLINE_LOCK:
         return SESSION_DEADLINE
@@ -231,6 +277,7 @@ def get_status():
     status["deletes_enabled"] = DELETES_ENABLED
     status["session_expires_at"] = int(session_deadline()) if status.get("session_active") and session_deadline() else None
     status["session_timeout_seconds"] = SESSION_TIMEOUT_SECONDS
+    status["home_counts"] = home_counts()
     status["upload_targets"] = {
         key: {
             "label": value["label"],
@@ -565,12 +612,14 @@ APP_HTML = r"""<!doctype html>
 
   /* File table */
   .file-tbl { width: 100%; border-collapse: collapse; font-size: 13px; background: var(--surface); }
-  .file-tbl th { text-align: left; font-weight: 500; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--faint); padding: 12px 14px; border-bottom: 1px solid var(--hairline); }
+  .file-tbl th { text-align: left; font-weight: 500; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--faint); padding: 12px 14px; border-bottom: 1px solid var(--hairline); }
   .file-tbl td { padding: 12px 14px; border-bottom: 1px solid var(--hairline); }
   .file-tbl tr { cursor: pointer; }
   .file-tbl tr:hover { background: var(--surface-2); }
   .file-tbl-actions { white-space: nowrap; text-align: right; }
   .file-tbl-icon { color: var(--faint); width: 30px; }
+  .dash-thumb { width: 54px; height: 32px; object-fit: cover; border-radius: 5px; background: var(--bg); border: 1px solid var(--hairline); display: block; }
+  .audio-preview { width: min(260px, 34vw); height: 30px; vertical-align: middle; }
   .file-name { color: var(--text); }
   .file-empty { padding: 60px; text-align: center; color: var(--muted); }
   .file-empty-h { font-size: 14px; color: var(--text); margin-bottom: 4px; }
@@ -603,12 +652,12 @@ APP_HTML = r"""<!doctype html>
   .set-nav-i:hover, .set-nav-i.on { color: var(--text); background: var(--surface); }
   .set-nav-l { font-size: 13px; font-weight: 500; }
   .set-nav-d { font-size: 10px; color: var(--faint); margin-top: 1px; letter-spacing: 0.06em; }
-  .set-section-title { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin: 0 0 14px; }
+  .set-section-title { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin: 0 0 14px; }
   .kv { display: flex; justify-content: space-between; gap: 16px; padding: 9px 0; border-bottom: 1px solid var(--hairline); align-items: baseline; }
   .kv:last-child { border-bottom: 0; }
   .kv-k { color: var(--muted); font-size: 12.5px; }
   .kv-v { font-size: 13px; text-align: right; }
-  .log-pre { white-space: pre-wrap; background: var(--bg); color: var(--muted); border: 1px solid var(--hairline); border-radius: 6px; padding: 14px; max-height: 320px; overflow: auto; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.55; }
+  .log-pre { white-space: pre-wrap; background: var(--bg); color: var(--muted); border: 1px solid var(--hairline); border-radius: 6px; padding: 14px; max-height: 320px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; line-height: 1.55; }
   .tg-row { display: flex; justify-content: space-between; align-items: center; padding: 11px 0; border: 0; background: transparent; width: 100%; border-bottom: 1px solid var(--hairline); color: inherit; text-align: left; }
   .tg-label { font-size: 13px; }
   .tg { width: 32px; height: 18px; border-radius: 999px; background: var(--hairline-2); position: relative; transition: background 160ms; flex-shrink: 0; }
@@ -720,6 +769,21 @@ APP_HTML = r"""<!doctype html>
       </div>
     </section>
 
+    <!-- PHOTOBOOTH -->
+    <section id="page-photobooth" class="hidden">
+      <div class="page-head">
+        <div><h1 class="page-title">Photobooth</h1></div>
+        <div class="page-head-r"><span id="photoboothInfo" class="ph-r-info mono"></span></div>
+      </div>
+      <div id="photoboothBanner"></div>
+      <div class="card" style="padding: 0; overflow: hidden;">
+        <table class="file-tbl">
+          <thead><tr><th class="file-tbl-icon"></th><th>Name</th><th>Size</th><th></th></tr></thead>
+          <tbody id="photoboothTable"></tbody>
+        </table>
+      </div>
+    </section>
+
     <!-- LIGHT SHOWS -->
     <section id="page-lightshow" class="hidden">
       <div class="page-head">
@@ -809,6 +873,7 @@ function svgIcon(name, size = 18, stroke = 1.5) {
 /* ============== tile / folder config ============== */
 const TILES = [
   { id: "dashcam",   drive: "cam",    icon: "videocam", label: "Dash cam",    countLabel: "files" },
+  { id: "photobooth",drive: "cam",    icon: "file",     label: "Photobooth",  countLabel: "photos" },
   { id: "music",     drive: "music",  icon: "music",    label: "Music",       countLabel: "tracks" },
   { id: "lightshow", drive: "sounds", icon: "sparkles", label: "Light shows", countLabel: "shows" },
   { id: "chime",     drive: "sounds", icon: "bell",     label: "Lock chime",  countLabel: "active" },
@@ -818,7 +883,6 @@ const DASHCAM_FOLDERS = [
   { key: "TeslaCam/RecentClips",    label: "Recent" },
   { key: "TeslaCam/SavedClips",     label: "Saved" },
   { key: "TeslaCam/SentryClips",    label: "Sentry" },
-  { key: "TeslaCam/Photobooth",     label: "Photobooth" },
   { key: "TeslaCam/EncryptedClips", label: "Encrypted" },
 ];
 
@@ -845,6 +909,7 @@ const EXTEND_PROMPT_MS = 2 * 60 * 1000;
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 }
+function jsStr(value) { return JSON.stringify(String(value ?? "")); }
 function fmtBytes(n) {
   if (n == null) return "—";
   const units = ["B","KB","MB","GB","TB"];
@@ -852,6 +917,10 @@ function fmtBytes(n) {
   for (const u of units) { if (v < 1024 || u === "TB") return u === "B" ? `${v} B` : `${v.toFixed(1)} ${u}`; v /= 1024; }
 }
 function pct(usage) { return usage && usage.total ? Math.max(0, Math.min(100, (usage.used / usage.total) * 100)) : 0; }
+function extOf(name) { return String(name || "").split(".").pop().toLowerCase(); }
+function isAudio(item) { return !item.is_dir && ["mp3","wav","m4a","aac","flac"].includes(extOf(item.name)); }
+function isVideo(item) { return !item.is_dir && ["mp4","mov","m4v"].includes(extOf(item.name)); }
+function isImage(item) { return !item.is_dir && ["jpg","jpeg","png","webp"].includes(extOf(item.name)); }
 function toast(msg, kind) {
   const el = document.getElementById("toast");
   el.textContent = msg;
@@ -876,6 +945,7 @@ async function refresh() {
     reconcileSessionTimer();
     if (currentPage === "home")      renderHome();
     if (currentPage === "dashcam")   await loadDashcam();
+    if (currentPage === "photobooth") await loadPhotobooth();
     if (currentPage === "music")     await loadFolder("music",     "music",  "Music",     "musicTable", "musicInfo", v => musicItems = v);
     if (currentPage === "lightshow") await loadFolder("lightshow", "sounds", "LightShow", "lightshowTable", "lightshowInfo", v => lightshowItems = v);
     if (currentPage === "chime")     await loadChime();
@@ -1006,7 +1076,9 @@ function renderHome() {
     const drive = status.drives[t.drive];
     let count;
     if (t.id === "chime") {
-      count = drive?.mounted ? "1" : "—";
+      count = drive?.mounted ? String(status.home_counts?.chime ?? 0) : "—";
+    } else if (status.home_counts && status.home_counts[t.id] != null) {
+      count = drive?.mounted ? String(status.home_counts[t.id]) : "—";
     } else {
       count = drive?.mounted ? (drive.files || 0) : "—";
     }
@@ -1014,7 +1086,7 @@ function renderHome() {
     const meterTone = t.id === "chime" ? (drive?.mounted ? "ok" : "err") : "";
     const meterWidth = t.id === "chime" ? (drive?.mounted ? 100 : 0) : pct(usage);
     const footRight = t.id === "chime"
-      ? (drive?.mounted ? "LockChime.wav" : "no chime")
+      ? (drive?.mounted ? (status.home_counts?.chime ? "LockChime.wav" : "no chime") : "not mounted")
       : (usage ? `${fmtBytes(usage.used)} / ${fmtBytes(usage.total)}` : "not mounted");
     return `<button class="home-tile" type="button" onclick="showPage('${t.id}')">
       <div class="home-tile-icon">${svgIcon(t.icon, 26, 1.2)}</div>
@@ -1045,15 +1117,27 @@ function sessionBanner(message) {
 }
 
 /* ============== folder rendering shared ============== */
-function fileRow(item, drive, onDelete) {
-  const icon = item.is_dir ? "folder" : "file";
+function previewCell(item, drive) {
+  if (isVideo(item)) return `<video class="dash-thumb" src="${item.download}#t=0.1" muted preload="metadata" playsinline></video>`;
+  if (isImage(item)) return `<img class="dash-thumb" src="${item.download}" alt="">`;
+  return svgIcon(item.is_dir ? "folder" : "file", 15, 1.4);
+}
+
+function audioAction(item) {
+  return isAudio(item) ? `<audio class="audio-preview" controls preload="none" src="${item.download}" onclick="event.stopPropagation()"></audio>` : "";
+}
+
+function fileRow(item, drive, onDelete, onOpen) {
   const actions = item.is_dir
     ? ""
-    : `<a class="icon-btn" href="${item.download}" title="Download" onclick="event.stopPropagation()">${svgIcon("download", 14)}</a>
+    : `${audioAction(item)}
+       <a class="icon-btn" href="${item.download}" title="Download" onclick="event.stopPropagation()">${svgIcon("download", 14)}</a>
        ${status.deletes_enabled && status.session_active ? `<button class="icon-btn icon-btn-danger" title="Delete" onclick="event.stopPropagation(); ${onDelete}">${svgIcon("trash", 14)}</button>` : ""}`;
-  const click = item.is_dir ? "" : `onclick="window.location.href='${item.download}'"`;
+  const click = item.is_dir
+    ? `onclick="${onOpen || ""}"`
+    : `onclick="window.location.href='${item.download}'"`;
   return `<tr ${click}>
-    <td class="file-tbl-icon">${svgIcon(icon, 15, 1.4)}</td>
+    <td class="file-tbl-icon">${previewCell(item, drive)}</td>
     <td class="file-name">${esc(item.name)}</td>
     <td class="mono num-faint">${esc(item.size_label || (item.is_dir ? "folder" : ""))}</td>
     <td class="file-tbl-actions">${actions}</td>
@@ -1084,14 +1168,46 @@ async function loadDashcam() {
   }
   try {
     const list = await api(`/api/list?drive=cam&path=${encodeURIComponent(dashcamFolder)}`);
-    dashcamItems = list.items || [];
+      dashcamItems = list.items || [];
     if (dashcamItems.length === 0) {
       tbody.innerHTML = emptyRow("No clips here", "The car writes here when it records.");
     } else {
-      tbody.innerHTML = dashcamItems.map(it => fileRow(it, "cam", `deleteItem('cam', '${esc(it.path).replace(/'/g, "&#39;")}')`)).join("");
+      tbody.innerHTML = dashcamItems.map(it => fileRow(
+        it,
+        "cam",
+        `deleteItem('cam', ${jsStr(it.path)})`,
+        `dashcamFolder=${jsStr(it.path)}; loadDashcam();`
+      )).join("");
     }
   } catch (e) {
     tbody.innerHTML = emptyRow("Could not load clips", e.message);
+  }
+}
+
+async function loadPhotobooth() {
+  document.getElementById("photoboothBanner").innerHTML = sessionBanner("Start a transfer session to browse and download Photobooth images.");
+  const drive = status.drives.cam;
+  document.getElementById("photoboothInfo").textContent = drive?.mounted ? `${status.home_counts?.photobooth ?? 0} photos on ${drive.label}` : "TESLADRIVE not mounted";
+  const tbody = document.getElementById("photoboothTable");
+  if (!drive?.mounted) {
+    tbody.innerHTML = emptyRow("Drive not mounted", "Start a transfer session to view Photobooth images.");
+    return;
+  }
+  try {
+    const list = await api("/api/list?drive=cam&path=TeslaCam%2FPhotobooth");
+    const items = list.items || [];
+    if (items.length === 0) {
+      tbody.innerHTML = emptyRow("No Photobooth files", "Photos will appear here after the car saves them.");
+    } else {
+      tbody.innerHTML = items.map(it => fileRow(
+        it,
+        "cam",
+        `deleteItem('cam', ${jsStr(it.path)})`,
+        ``
+      )).join("");
+    }
+  } catch (e) {
+    tbody.innerHTML = emptyRow("Could not load Photobooth", e.message);
   }
 }
 
@@ -1099,8 +1215,11 @@ async function loadDashcam() {
 async function loadFolder(pageId, drive, path, tableId, infoId, setItems) {
   const driveInfo = status.drives[drive];
   document.getElementById(`${pageId}Banner`).innerHTML = sessionBanner();
+  const countLabel = pageId === "lightshow"
+    ? `${status.home_counts?.lightshow ?? 0} shows`
+    : `${status.home_counts?.music ?? driveInfo?.files ?? 0} tracks`;
   document.getElementById(infoId).textContent = driveInfo?.mounted
-    ? `${driveInfo.files} files · ${driveInfo.usage ? fmtBytes(driveInfo.usage.used) + " / " + fmtBytes(driveInfo.usage.total) : ""}`
+    ? `${countLabel} · ${driveInfo.usage ? fmtBytes(driveInfo.usage.used) + " / " + fmtBytes(driveInfo.usage.total) : ""}`
     : `${driveInfo?.label || ""} not mounted`;
 
   renderUploadZone(pageId);
@@ -1119,7 +1238,12 @@ async function loadFolder(pageId, drive, path, tableId, infoId, setItems) {
     if (items.length === 0) {
       tbody.innerHTML = emptyRow("No files yet", "Drop files into the zone above to add them.");
     } else {
-      tbody.innerHTML = items.map(it => fileRow(it, drive, `deleteItem('${drive}', '${esc(it.path).replace(/'/g, "&#39;")}')`)).join("");
+      tbody.innerHTML = items.map(it => fileRow(
+        it,
+        drive,
+        `deleteItem(${jsStr(drive)}, ${jsStr(it.path)})`,
+        ``
+      )).join("");
     }
   } catch (e) {
     tbody.innerHTML = emptyRow("Could not load files", e.message);
@@ -1301,8 +1425,9 @@ async function loadChime() {
         <div class="lc-info-r"><span class="lc-info-k">UPDATED</span><span class="lc-info-v mono">${new Date(chime.modified * 1000).toLocaleString()}</span></div>
       </div>
       <div class="lc-actions">
+        <audio class="audio-preview" controls preload="none" src="${chime.download}"></audio>
         <a class="btn" href="${chime.download}">${svgIcon("download", 15)}<span>Download</span></a>
-        ${status.deletes_enabled && status.session_active ? `<button class="btn btn-danger" onclick="deleteItem('sounds','${esc(chime.path).replace(/'/g, "&#39;")}')">${svgIcon("trash", 15)}<span>Remove from car</span></button>` : ""}
+        ${status.deletes_enabled && status.session_active ? `<button class="btn btn-danger" onclick="deleteItem('sounds',${jsStr(chime.path)})">${svgIcon("trash", 15)}<span>Remove from car</span></button>` : ""}
       </div>
     </div>
     <div class="lc-side">${uploadHtml}${rulesHtml}</div>
