@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import cgi
 import html
 import json
 import mimetypes
@@ -86,6 +85,49 @@ def validate_filename(name, allowed_extensions, fixed_name=None):
     if suffix not in allowed_extensions:
         raise ValueError(f"Unsupported file type: {suffix or '(none)'}")
     return base
+
+
+def parse_multipart(headers, stream):
+    content_type = headers.get("Content-Type", "")
+    match = re.search(r"boundary=(?P<boundary>[^;]+)", content_type)
+    if not match:
+        raise ValueError("Upload request is missing a multipart boundary.")
+    boundary = match.group("boundary").strip().strip('"').encode()
+    length = int(headers.get("Content-Length", "0"))
+    if length <= 0:
+        raise ValueError("Upload request is empty.")
+
+    body = stream.read(length)
+    marker = b"--" + boundary
+    fields = {}
+    files = {}
+
+    for part in body.split(marker):
+        part = part.strip(b"\r\n")
+        if not part or part == b"--":
+            continue
+        if part.endswith(b"--"):
+            part = part[:-2].rstrip(b"\r\n")
+        if b"\r\n\r\n" not in part:
+            continue
+        raw_headers, payload = part.split(b"\r\n\r\n", 1)
+        payload = payload.rstrip(b"\r\n")
+        header_lines = raw_headers.decode("utf-8", "replace").split("\r\n")
+        disposition = ""
+        for line in header_lines:
+            if line.lower().startswith("content-disposition:"):
+                disposition = line
+                break
+        name_match = re.search(r'name="([^"]+)"', disposition)
+        if not name_match:
+            continue
+        name = name_match.group(1)
+        filename_match = re.search(r'filename="([^"]*)"', disposition)
+        if filename_match:
+            files[name] = {"filename": filename_match.group(1), "data": payload}
+        else:
+            fields[name] = payload.decode("utf-8", "replace")
+    return fields, files
 
 
 def read_recent_logs():
@@ -266,27 +308,24 @@ class PortalHandler(BaseHTTPRequestHandler):
         status = get_status()
         if not status["session_active"]:
             raise ValueError("Start a transfer session before uploading.")
-        form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={
-            "REQUEST_METHOD": "POST",
-            "CONTENT_TYPE": self.headers.get("Content-Type"),
-        })
-        target_key = form.getfirst("target", "")
+        fields, files = parse_multipart(self.headers, self.rfile)
+        target_key = fields.get("target", "")
         if target_key not in UPLOAD_TARGETS:
             raise ValueError("Unknown upload destination.")
-        file_item = form["file"] if "file" in form else None
-        if file_item is None or not getattr(file_item, "filename", ""):
+        file_item = files.get("file")
+        if file_item is None or not file_item.get("filename"):
             raise ValueError("No file uploaded.")
 
         target_info = UPLOAD_TARGETS[target_key]
         drive = DRIVES[target_info["drive"]]
         if not status["drives"][target_info["drive"]]["mounted"]:
             raise ValueError(f"{drive['label']} is not mounted.")
-        filename = validate_filename(file_item.filename, target_info["extensions"], target_info.get("fixed_name"))
+        filename = validate_filename(file_item["filename"], target_info["extensions"], target_info.get("fixed_name"))
         destination_dir, _ = safe_join(drive["root"], target_info["dir"])
         destination_dir.mkdir(parents=True, exist_ok=True)
         destination = destination_dir / filename
         with destination.open("wb") as output:
-            shutil.copyfileobj(file_item.file, output)
+            output.write(file_item["data"])
         os.sync()
         self.send_json({
             "ok": True,
