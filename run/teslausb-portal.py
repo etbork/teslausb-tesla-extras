@@ -993,7 +993,7 @@ APP_HTML = r"""<!doctype html>
 <div id="splash" class="splash">
   <div class="splash-card">
     <h2 class="splash-title">Connect to TeslaDrive</h2>
-    <p class="splash-sub">Start a transfer session to temporarily disconnect the car-facing USB drives, mount them on the Pi, and manage files here. The session automatically ends after 5 minutes.</p>
+    <p class="splash-sub">Start a 5 minute session to browse, download, and add files. When time is up, TeslaDrive switches back to the car automatically.</p>
     <div class="splash-actions">
       <button class="btn btn-solid" type="button" onclick="startTimedSession()">Start 5 minute session</button>
       <button class="btn" type="button" onclick="hideSplash()">View only</button>
