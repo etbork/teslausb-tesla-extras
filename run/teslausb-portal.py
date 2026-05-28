@@ -24,6 +24,7 @@ DELETES_ENABLED = os.environ.get("PORTAL_DELETES_ENABLED", "false").lower() == "
 LOG_FILES = ["/mutable/portal.log"]
 SESSION_TIMEOUT_SECONDS = int(os.environ.get("PORTAL_SESSION_TIMEOUT_SECONDS", "300"))
 SESSION_EXTEND_SECONDS = int(os.environ.get("PORTAL_SESSION_EXTEND_SECONDS", str(SESSION_TIMEOUT_SECONDS)))
+SESSION_DEADLINE_FILE = Path(os.environ.get("PORTAL_SESSION_DEADLINE_FILE", "/run/teslausb-portal-session.deadline"))
 SESSION_DEADLINE = 0.0
 SESSION_DEADLINE_LOCK = threading.Lock()
 
@@ -251,17 +252,47 @@ def session_deadline():
         return SESSION_DEADLINE
 
 
+def write_session_deadline(deadline):
+    try:
+        SESSION_DEADLINE_FILE.write_text(f"{deadline:.6f}\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def read_session_deadline():
+    try:
+        return float(SESSION_DEADLINE_FILE.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return 0.0
+
+
+def load_session_deadline():
+    global SESSION_DEADLINE
+    deadline = read_session_deadline()
+    with SESSION_DEADLINE_LOCK:
+        SESSION_DEADLINE = deadline
+    return deadline
+
+
 def set_session_deadline(seconds=None):
     global SESSION_DEADLINE
     with SESSION_DEADLINE_LOCK:
         SESSION_DEADLINE = time.time() + (seconds or SESSION_TIMEOUT_SECONDS)
-        return SESSION_DEADLINE
+        deadline = SESSION_DEADLINE
+    write_session_deadline(deadline)
+    return deadline
 
 
 def clear_session_deadline():
     global SESSION_DEADLINE
     with SESSION_DEADLINE_LOCK:
         SESSION_DEADLINE = 0.0
+    try:
+        SESSION_DEADLINE_FILE.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
 
 
 def session_watchdog():
@@ -288,6 +319,11 @@ def get_status():
         status = {"session_active": False, "usb": "unknown", "mounts": {}, "error": str(exc)}
     if not status.get("session_active"):
         clear_session_deadline()
+    elif not session_deadline():
+        # If the portal service restarted mid-session, mounts can remain active
+        # while the in-memory timer is gone. Re-arm a short timeout so transfer
+        # mode cannot persist indefinitely.
+        set_session_deadline()
     drives = {}
     for key, info in DRIVES.items():
         root = info["root"]
@@ -2016,6 +2052,7 @@ setInterval(() => {
 
 
 def main():
+    load_session_deadline()
     threading.Thread(target=session_watchdog, daemon=True).start()
     server = ThreadingHTTPServer((HOST, PORT), PortalHandler)
     print(f"TeslaUSB portal listening on {HOST}:{PORT}", flush=True)
