@@ -783,6 +783,17 @@ APP_HTML = r"""<!doctype html>
   .file-tbl-actions { white-space: nowrap; text-align: right; }
   .file-tbl-icon { color: var(--faint); width: 30px; }
   .dash-thumb { width: 54px; height: 32px; object-fit: cover; border-radius: 5px; background: var(--bg); border: 1px solid var(--hairline); display: block; }
+  .clip-stack { width: 72px; height: 46px; position: relative; display: block; }
+  .clip-stack .dash-thumb { width: 64px; height: 38px; position: absolute; left: 0; top: 0; box-shadow: 0 0 0 1px var(--bg); }
+  .clip-stack .dash-thumb:nth-child(2) { left: 4px; top: 4px; opacity: .82; }
+  .clip-stack .dash-thumb:nth-child(3) { left: 8px; top: 8px; opacity: .68; }
+  .clip-name { display: flex; flex-direction: column; gap: 4px; }
+  .clip-sub { color: var(--faint); font-size: 11.5px; }
+  .clip-expanded { background: color-mix(in oklch, var(--surface) 70%, var(--bg)); }
+  .clip-expanded td { padding: 0 14px 14px; }
+  .clip-files { display: grid; gap: 8px; padding: 10px 0 0 102px; }
+  .clip-file { display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; padding: 8px 10px; border: 1px solid var(--hairline); border-radius: 7px; background: var(--bg); }
+  .clip-file-actions { display: flex; gap: 4px; align-items: center; }
   .album-art { width: 38px; height: 38px; object-fit: cover; border-radius: 6px; background: var(--bg); border: 1px solid var(--hairline); display: block; }
   .album-fallback { width: 38px; height: 38px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--hairline); display: grid; place-items: center; color: var(--muted); }
   .audio-preview { width: min(260px, 34vw); height: 30px; vertical-align: middle; }
@@ -1063,6 +1074,7 @@ let status = null;
 let currentPage = "home";
 let dashcamFolder = "TeslaCam/RecentClips";
 let dashcamItems = [];
+let expandedClipGroups = new Set();
 let musicItems = [];
 let lightshowItems = [];
 let rejections = { music: [], lightshow: [] };
@@ -1333,6 +1345,97 @@ function emptyRow(message, sub) {
   return `<tr><td colspan="4" class="file-empty"><div class="file-empty-h">${esc(message)}</div><div class="file-empty-s mono">${esc(sub || "")}</div></td></tr>`;
 }
 
+function clipGroupKey(item) {
+  const match = String(item.name || "").match(/^(.+?)-(back|front|left_pillar|left_repeater|right_pillar|right_repeater)\.mp4$/i);
+  return match ? match[1] : "";
+}
+
+function cameraLabel(name) {
+  const match = String(name || "").match(/-(back|front|left_pillar|left_repeater|right_pillar|right_repeater)\.mp4$/i);
+  if (!match) return "Clip";
+  return match[1].replace(/_/g, " ").replace(/\b\w/g, ch => ch.toUpperCase());
+}
+
+function formatClipTime(key) {
+  const match = String(key || "").match(/^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})$/);
+  if (!match) return key;
+  const [, y, mo, d, h, mi, s] = match;
+  const date = new Date(`${y}-${mo}-${d}T${h}:${mi}:${s}`);
+  return Number.isNaN(date.getTime()) ? key : date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+}
+
+function groupDashcamItems(items) {
+  const grouped = new Map();
+  const passthrough = [];
+  for (const item of items) {
+    if (item.is_dir) {
+      passthrough.push({ type: "item", item });
+      continue;
+    }
+    const key = clipGroupKey(item);
+    if (!key) {
+      passthrough.push({ type: "item", item });
+      continue;
+    }
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(item);
+  }
+  const groups = Array.from(grouped.entries())
+    .map(([key, files]) => ({ type: "group", key, files: files.sort((a, b) => cameraLabel(a.name).localeCompare(cameraLabel(b.name))) }))
+    .sort((a, b) => b.key.localeCompare(a.key));
+  return [...groups, ...passthrough];
+}
+
+function clipStack(files) {
+  return `<span class="clip-stack">${files.slice(0, 3).map(file => `<video class="dash-thumb" src="${file.download}#t=0.1" muted preload="metadata" playsinline></video>`).join("")}</span>`;
+}
+
+function clipGroupRow(group) {
+  const totalSize = group.files.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
+  const expanded = expandedClipGroups.has(group.key);
+  const summary = `${group.files.length} clips · ${formatBytes(totalSize)}`;
+  const filesHtml = expanded ? `<tr class="clip-expanded"><td colspan="4"><div class="clip-files">
+    ${group.files.map(file => `<div class="clip-file">
+      <span>${esc(cameraLabel(file.name))}</span>
+      <span class="mono num-faint">${esc(file.size_label)}</span>
+      <span class="clip-file-actions">
+        <a class="icon-btn" href="${file.download}" title="Download" onclick="event.stopPropagation()">${svgIcon("download", 14)}</a>
+        ${status.deletes_enabled && status.session_active ? `<button class="icon-btn icon-btn-danger" title="Delete" onclick="event.stopPropagation(); deleteItem('cam', ${jsStr(file.path)})">${svgIcon("trash", 14)}</button>` : ""}
+      </span>
+    </div>`).join("")}
+  </div></td></tr>` : "";
+  return `<tr onclick="toggleClipGroup(${jsStr(group.key)})">
+    <td class="file-tbl-icon">${clipStack(group.files)}</td>
+    <td class="file-name"><span class="clip-name"><span>${esc(formatClipTime(group.key))}</span><span class="clip-sub mono">${esc(group.key)}</span></span></td>
+    <td class="mono num-faint">${esc(summary)}</td>
+    <td class="file-tbl-actions"><button class="icon-btn" title="${expanded ? "Collapse" : "Expand"}" onclick="event.stopPropagation(); toggleClipGroup(${jsStr(group.key)})">${expanded ? svgIcon("back", 14) : svgIcon("play", 14)}</button></td>
+  </tr>${filesHtml}`;
+}
+
+function toggleClipGroup(key) {
+  if (expandedClipGroups.has(key)) expandedClipGroups.delete(key);
+  else expandedClipGroups.add(key);
+  renderDashcamRows();
+}
+
+function renderDashcamRows() {
+  const tbody = document.getElementById("dashcamTable");
+  if (!dashcamItems.length) {
+    tbody.innerHTML = emptyRow("No clips here", "The car writes here when it records.");
+    return;
+  }
+  tbody.innerHTML = groupDashcamItems(dashcamItems).map(entry => {
+    if (entry.type === "group") return clipGroupRow(entry);
+    const it = entry.item;
+    return fileRow(
+      it,
+      "cam",
+      `deleteItem('cam', ${jsStr(it.path)})`,
+      `dashcamFolder=${jsStr(it.path)}; loadDashcam();`
+    );
+  }).join("");
+}
+
 /* ============== DASH CAM ============== */
 async function loadDashcam() {
   document.getElementById("dashcamBanner").innerHTML = sessionBanner("The car writes here. Start a transfer session to browse and download clips.");
@@ -1353,17 +1456,8 @@ async function loadDashcam() {
   }
   try {
     const list = await api(`/api/list?drive=cam&path=${encodeURIComponent(dashcamFolder)}`);
-      dashcamItems = list.items || [];
-    if (dashcamItems.length === 0) {
-      tbody.innerHTML = emptyRow("No clips here", "The car writes here when it records.");
-    } else {
-      tbody.innerHTML = dashcamItems.map(it => fileRow(
-        it,
-        "cam",
-        `deleteItem('cam', ${jsStr(it.path)})`,
-        `dashcamFolder=${jsStr(it.path)}; loadDashcam();`
-      )).join("");
-    }
+    dashcamItems = list.items || [];
+    renderDashcamRows();
   } catch (e) {
     tbody.innerHTML = emptyRow("Could not load clips", e.message);
   }
