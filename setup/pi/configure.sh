@@ -12,10 +12,10 @@ function get_script () {
     local local_path="$1"
     local name="$2"
     local remote_path="${3:-}"
-    local encoded_branch="${BRANCH//\//%2F}"
+    local ref="refs/heads/$BRANCH"
 
     echo "Starting download for $local_path/$name"
-    curl --fail --show-error --location -o "$local_path/$name" https://raw.githubusercontent.com/"$REPO"/"$REPOSITORY"/"$encoded_branch"/"$remote_path"/"$name"
+    curl --fail --show-error --location -o "$local_path/$name" https://raw.githubusercontent.com/"$REPO"/"$REPOSITORY"/"$ref"/"$remote_path"/"$name"
     chmod +x "$local_path/$name"
     echo "Done"
 }
