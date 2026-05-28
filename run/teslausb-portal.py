@@ -905,6 +905,7 @@ APP_HTML = r"""<!doctype html>
   .album-wrap .album-fallback { display: none; position: absolute; inset: 0; }
   .album-wrap.art-missing .album-art { display: none; }
   .album-wrap.art-missing .album-fallback { display: grid; }
+  .audio-play-btn { min-width: 82px; }
   .audio-preview { width: min(260px, 34vw); height: 30px; vertical-align: middle; }
   .audio-row-actions { display: inline-flex; align-items: center; justify-content: flex-end; gap: 8px; }
   .file-name { color: var(--text); }
@@ -967,6 +968,10 @@ APP_HTML = r"""<!doctype html>
   .video-shell { width: min(1040px, 100%); display: grid; gap: 10px; }
   .video-close { justify-self: end; }
   .video-player { width: 100%; max-height: min(76vh, 720px); background: black; border: 1px solid var(--hairline-2); border-radius: 8px; }
+  .audio-player { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 25; width: min(720px, calc(100% - 28px)); display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; padding: 10px; border-radius: 12px; border: 1px solid var(--hairline-2); background: color-mix(in srgb, var(--surface) 94%, black); box-shadow: 0 18px 60px rgba(0,0,0,.35); }
+  .audio-player.hidden { display: none; }
+  .audio-player-title { min-width: 0; color: var(--text); font-size: 12px; margin: 0 0 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .audio-player audio { width: 100%; height: 32px; display: block; }
 
   /* Responsive */
   @media (max-width: 900px) {
@@ -1007,6 +1012,8 @@ APP_HTML = r"""<!doctype html>
     .file-tbl-actions { min-width: 0; text-align: left; margin-top: 10px; }
     .audio-row-actions { width: 100%; justify-content: flex-start; }
     .audio-preview { width: min(245px, 68vw); }
+    .audio-player { grid-template-columns: 1fr; bottom: 10px; width: calc(100% - 20px); }
+    .audio-player .icon-btn { justify-self: end; }
     .clip-expanded, .clip-pager-row { display: block !important; padding: 0; }
     .clip-expanded td { padding: 0 12px 12px; }
     .clip-pager-row td { padding: 0; }
@@ -1169,6 +1176,17 @@ APP_HTML = r"""<!doctype html>
     <video id="videoPlayer" class="video-player" controls playsinline preload="metadata"></video>
   </div>
 </div>
+<div id="audioPlayer" class="audio-player hidden">
+  <div>
+    <div id="audioPlayerTitle" class="audio-player-title"></div>
+    <audio id="sharedAudio" controls preload="none"></audio>
+  </div>
+  <button class="icon-btn" type="button" title="Close player" onclick="closeAudioPlayer()">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M18 6 6 18M6 6l12 12"/>
+    </svg>
+  </button>
+</div>
 
 <script>
 /* ============== icon paths ============== */
@@ -1268,6 +1286,27 @@ function pauseAllMedia() {
   document.querySelectorAll("audio, video").forEach(el => {
     try { el.pause(); } catch (_) { /* ignore */ }
   });
+}
+
+function playAudio(url, title) {
+  pauseAllMedia();
+  const wrap = document.getElementById("audioPlayer");
+  const player = document.getElementById("sharedAudio");
+  document.getElementById("audioPlayerTitle").textContent = title || "Audio";
+  if (player.src !== new URL(url, window.location.href).href) {
+    player.src = url;
+  }
+  wrap.classList.remove("hidden");
+  player.play().catch(() => toast("Could not play this audio file", "err"));
+}
+
+function closeAudioPlayer() {
+  const wrap = document.getElementById("audioPlayer");
+  const player = document.getElementById("sharedAudio");
+  player.pause();
+  player.removeAttribute("src");
+  player.load();
+  wrap.classList.add("hidden");
 }
 
 function playVideo(url, title) {
@@ -1491,7 +1530,7 @@ function previewCell(item, drive) {
 }
 
 function audioAction(item) {
-  return isAudio(item) ? `<audio class="audio-preview" controls preload="none" src="${inlineUrl(item.download)}" onclick="event.stopPropagation()"></audio>` : "";
+  return isAudio(item) ? `<button class="btn btn-sm audio-play-btn" type="button" onclick="event.stopPropagation(); playAudio(${jsStr(inlineUrl(item.download))}, ${jsStr(item.name)})">${svgIcon("play", 14)}<span>Play</span></button>` : "";
 }
 
 function fileRow(item, drive, onDelete, onOpen) {
@@ -1508,6 +1547,8 @@ function fileRow(item, drive, onDelete, onOpen) {
     ? `onclick="${onOpen || ""}"`
     : isVideo(item)
       ? `onclick="playVideo(${jsStr(inlineUrl(item.download))}, ${jsStr(item.name)})"`
+      : isAudio(item)
+        ? `onclick="playAudio(${jsStr(inlineUrl(item.download))}, ${jsStr(item.name)})"`
       : `onclick="window.location.href='${item.download}'"`;
   return `<tr ${click}>
     <td class="file-tbl-icon">${previewCell(item, drive)}</td>
@@ -1976,6 +2017,7 @@ function renderSettings() {
 function showPage(page) {
   if (page !== currentPage) {
     pauseAllMedia();
+    closeAudioPlayer();
     closeVideo();
   }
   currentPage = page;
