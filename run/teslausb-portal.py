@@ -7,6 +7,7 @@ import os
 import posixpath
 import re
 import shutil
+import struct
 import subprocess
 import threading
 import time
@@ -42,6 +43,7 @@ UPLOAD_TARGETS = {
 }
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()+-]{0,120}$")
+MAX_ART_BYTES = 8 * 1024 * 1024
 
 
 def run_helper(action):
@@ -316,9 +318,148 @@ def list_directory(drive_key, rel):
             "size_label": "" if child.is_dir() else format_bytes(stat.st_size),
             "modified": int(stat.st_mtime),
             "download": "" if child.is_dir() else f"/download?drive={quote(drive_key)}&path={quote(child_rel)}",
+            "art": "" if child.is_dir() or child.suffix.lower() not in {".mp3", ".flac", ".m4a", ".aac", ".mp4"} else f"/art?drive={quote(drive_key)}&path={quote(child_rel)}",
         })
     parent = posixpath.dirname(rel) if rel else ""
     return {"drive": drive_key, "path": rel, "parent": parent, "items": items}
+
+
+def synchsafe_to_int(data):
+    return ((data[0] & 0x7F) << 21) | ((data[1] & 0x7F) << 14) | ((data[2] & 0x7F) << 7) | (data[3] & 0x7F)
+
+
+def guess_image_type(data, fallback="application/octet-stream"):
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return "image/gif"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "image/webp"
+    return fallback or "application/octet-stream"
+
+
+def extract_id3_art(path):
+    with path.open("rb") as file:
+        header = file.read(10)
+        if len(header) != 10 or header[:3] != b"ID3":
+            return None
+        version = header[3]
+        tag_size = synchsafe_to_int(header[6:10])
+        tag = file.read(min(tag_size, MAX_ART_BYTES + 1024 * 1024))
+    offset = 0
+    while offset + 10 <= len(tag):
+        frame_id = tag[offset:offset + 4]
+        if not frame_id.strip(b"\x00"):
+            break
+        if version == 4:
+            frame_size = synchsafe_to_int(tag[offset + 4:offset + 8])
+        else:
+            frame_size = int.from_bytes(tag[offset + 4:offset + 8], "big")
+        payload = tag[offset + 10:offset + 10 + frame_size]
+        if frame_id == b"APIC" and len(payload) > 4:
+            mime_end = payload.find(b"\x00", 1)
+            if mime_end != -1 and mime_end + 2 < len(payload):
+                mime = payload[1:mime_end].decode("latin1", "ignore") or "image/jpeg"
+                desc_start = mime_end + 2
+                desc_end = payload.find(b"\x00", desc_start)
+                if desc_end != -1 and desc_end + 1 < len(payload):
+                    image = payload[desc_end + 1:]
+                    if 0 < len(image) <= MAX_ART_BYTES:
+                        return mime, image
+        offset += 10 + frame_size
+    return None
+
+
+def extract_flac_art(path):
+    with path.open("rb") as file:
+        if file.read(4) != b"fLaC":
+            return None
+        while True:
+            header = file.read(4)
+            if len(header) != 4:
+                return None
+            is_last = bool(header[0] & 0x80)
+            block_type = header[0] & 0x7F
+            block_len = int.from_bytes(header[1:4], "big")
+            if block_type == 6:
+                block = file.read(min(block_len, MAX_ART_BYTES + 4096))
+                if len(block) < 32:
+                    return None
+                pos = 4
+                mime_len = int.from_bytes(block[pos:pos + 4], "big")
+                pos += 4
+                mime = block[pos:pos + mime_len].decode("latin1", "ignore") or "image/jpeg"
+                pos += mime_len
+                desc_len = int.from_bytes(block[pos:pos + 4], "big")
+                pos += 4 + desc_len + 16
+                image_len = int.from_bytes(block[pos:pos + 4], "big")
+                pos += 4
+                image = block[pos:pos + image_len]
+                if 0 < len(image) <= MAX_ART_BYTES:
+                    return mime, image
+                return None
+            file.seek(block_len, os.SEEK_CUR)
+            if is_last:
+                return None
+
+
+def iter_mp4_atoms(data, start=0, end=None):
+    end = len(data) if end is None else min(end, len(data))
+    pos = start
+    while pos + 8 <= end:
+        size = int.from_bytes(data[pos:pos + 4], "big")
+        atom_type = data[pos + 4:pos + 8]
+        header = 8
+        if size == 1 and pos + 16 <= end:
+            size = int.from_bytes(data[pos + 8:pos + 16], "big")
+            header = 16
+        elif size == 0:
+            size = end - pos
+        if size < header or pos + size > end:
+            break
+        yield atom_type, pos + header, pos + size
+        pos += size
+
+
+def extract_mp4_covr_from_atoms(data, start=0, end=None):
+    for atom_type, content_start, content_end in iter_mp4_atoms(data, start, end):
+        if atom_type == b"covr":
+            for child_type, child_start, child_end in iter_mp4_atoms(data, content_start, content_end):
+                if child_type == b"data" and child_end - child_start > 8:
+                    data_type = int.from_bytes(data[child_start:child_start + 4], "big")
+                    image = data[child_start + 8:child_end]
+                    mime = "image/png" if data_type == 14 else "image/jpeg" if data_type == 13 else guess_image_type(image)
+                    if 0 < len(image) <= MAX_ART_BYTES:
+                        return mime, image
+        elif atom_type in {b"moov", b"udta", b"meta", b"ilst"}:
+            nested_start = content_start + 4 if atom_type == b"meta" else content_start
+            found = extract_mp4_covr_from_atoms(data, nested_start, content_end)
+            if found:
+                return found
+    return None
+
+
+def extract_mp4_art(path):
+    data = path.read_bytes()
+    if len(data) > 64 * 1024 * 1024:
+        data = data[:64 * 1024 * 1024]
+    return extract_mp4_covr_from_atoms(data)
+
+
+def extract_album_art(path):
+    suffix = path.suffix.lower()
+    try:
+        if suffix == ".mp3":
+            return extract_id3_art(path)
+        if suffix == ".flac":
+            return extract_flac_art(path)
+        if suffix in {".m4a", ".aac", ".mp4"}:
+            return extract_mp4_art(path)
+    except Exception:
+        return None
+    return None
 
 
 def delete_path(drive_key, rel):
@@ -371,6 +512,8 @@ class PortalHandler(BaseHTTPRequestHandler):
                 self.send_json(list_directory(query.get("drive", ["cam"])[0], query.get("path", [""])[0]))
             elif parsed.path == "/download":
                 self.download(parsed)
+            elif parsed.path == "/art":
+                self.album_art(parsed)
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
         except Exception as exc:
@@ -419,6 +562,27 @@ class PortalHandler(BaseHTTPRequestHandler):
         self.end_headers()
         with target.open("rb") as file:
             shutil.copyfileobj(file, self.wfile)
+
+    def album_art(self, parsed):
+        query = parse_qs(parsed.query)
+        drive_key = query.get("drive", [""])[0]
+        rel = query.get("path", [""])[0]
+        if drive_key not in DRIVES:
+            raise ValueError("Unknown drive.")
+        target, _ = safe_join(DRIVES[drive_key]["root"], rel)
+        if not target.is_file():
+            raise ValueError("Album art path is not a file.")
+        extracted = extract_album_art(target)
+        if not extracted:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        content_type, image = extracted
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", guess_image_type(image, content_type))
+        self.send_header("Content-Length", str(len(image)))
+        self.send_header("Cache-Control", "private, max-age=3600")
+        self.end_headers()
+        self.wfile.write(image)
 
     def handle_upload(self):
         if not UPLOADS_ENABLED:
@@ -619,6 +783,8 @@ APP_HTML = r"""<!doctype html>
   .file-tbl-actions { white-space: nowrap; text-align: right; }
   .file-tbl-icon { color: var(--faint); width: 30px; }
   .dash-thumb { width: 54px; height: 32px; object-fit: cover; border-radius: 5px; background: var(--bg); border: 1px solid var(--hairline); display: block; }
+  .album-art { width: 38px; height: 38px; object-fit: cover; border-radius: 6px; background: var(--bg); border: 1px solid var(--hairline); display: block; }
+  .album-fallback { width: 38px; height: 38px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--hairline); display: grid; place-items: center; color: var(--muted); }
   .audio-preview { width: min(260px, 34vw); height: 30px; vertical-align: middle; }
   .file-name { color: var(--text); }
   .file-empty { padding: 60px; text-align: center; color: var(--muted); }
@@ -1118,6 +1284,11 @@ function sessionBanner(message) {
 
 /* ============== folder rendering shared ============== */
 function previewCell(item, drive) {
+  if (drive === "music" && isAudio(item)) {
+    return item.art
+      ? `<img class="album-art" src="${item.art}" alt="" loading="lazy" onerror="this.outerHTML='<span class=&quot;album-fallback&quot;>${svgIcon("music", 17).replace(/'/g, "&#39;")}</span>'">`
+      : `<span class="album-fallback">${svgIcon("music", 17)}</span>`;
+  }
   if (isVideo(item)) return `<video class="dash-thumb" src="${item.download}#t=0.1" muted preload="metadata" playsinline></video>`;
   if (isImage(item)) return `<img class="dash-thumb" src="${item.download}" alt="">`;
   return svgIcon(item.is_dir ? "folder" : "file", 15, 1.4);
