@@ -925,6 +925,8 @@ APP_HTML = r"""<!doctype html>
   .clip-stack .dash-thumb { width: 64px; height: 38px; position: absolute; left: 0; top: 0; box-shadow: 0 0 0 1px var(--bg); }
   .clip-stack .dash-thumb:nth-child(2) { left: 4px; top: 4px; opacity: .82; }
   .clip-stack .dash-thumb:nth-child(3) { left: 8px; top: 8px; opacity: .68; }
+  .dash-thumb-tile { gap: 2px; font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .dash-thumb-tile svg { color: var(--text); }
   .clip-name { display: flex; flex-direction: column; gap: 4px; }
   .clip-sub { color: var(--faint); font-size: 11.5px; }
   .clip-expanded { background: color-mix(in oklch, var(--surface) 70%, var(--bg)); }
@@ -1437,7 +1439,7 @@ function buildVideoCell(slot, file, single = false) {
   }
   return `<div class="video-cell video-cell-${slot} ${single ? "video-cell-single" : ""}">
     <div class="video-cell-label"><span>${esc(label)}</span><span class="mono">${esc(fileName)}</span></div>
-    <video class="video-player" data-camera="${esc(key)}" src="${inlineUrl(file.download)}" playsinline muted controls preload="metadata"></video>
+    <video class="video-player" data-camera="${esc(key)}" src="${inlineUrl(file.download)}" playsinline muted preload="metadata"></video>
   </div>`;
 }
 
@@ -1849,7 +1851,7 @@ function clipStack(files) {
   const front = files.find(file => cameraKey(file.name) === "front");
   const file = front || files[0];
   const key = clipGroupKey(file);
-  return `<span class="clip-stack"><button class="dash-thumb icon-btn" type="button" title="Open viewer" onclick="event.stopPropagation(); openClipGroupViewer(${jsAttr(key)})"><video class="dash-thumb" src="${inlineUrl(file.download)}#t=0.1" muted preload="metadata" playsinline></video></button></span>`;
+  return `<span class="clip-stack"><button class="dash-thumb dash-thumb-tile icon-btn" type="button" title="Open viewer" onclick="event.stopPropagation(); openClipGroupViewer(${jsAttr(key)})">${svgIcon("play", 14)}<span>Front</span></button></span>`;
 }
 
 function clipGroupRow(group) {
