@@ -187,6 +187,93 @@ def update_hotspot_settings(ssid, password=None):
     return hotspot_status()
 
 
+def run_quiet(command):
+    return subprocess.run(command, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout.strip()
+
+
+def systemctl_active(service):
+    return subprocess.run(["systemctl", "is-active", "--quiet", service], check=False).returncode == 0
+
+
+def wifi_status():
+    ip_output = run_quiet(["ip", "-4", "-br", "addr", "show", "wlan0"])
+    current_ssid = run_quiet(["iwgetid", "-r"]) if shutil.which("iwgetid") else ""
+    portal_ip = "192.168.50.1" in ip_output
+    hotspot_active = systemctl_active("hostapd")
+    wifi_active = systemctl_active("NetworkManager")
+    mode = "hotspot" if portal_ip and hotspot_active else "wifi"
+    return {
+        "mode": mode,
+        "current_ssid": current_ssid,
+        "wlan0": ip_output,
+        "hotspot_active": hotspot_active,
+        "wifi_manager_active": wifi_active,
+        "portal_ip": "192.168.50.1",
+    }
+
+
+def scan_wifi_networks():
+    if not shutil.which("nmcli"):
+        raise ValueError("Wi-Fi scanning needs NetworkManager/nmcli.")
+    output = run_quiet(["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY", "dev", "wifi", "list", "ifname", "wlan0", "--rescan", "yes"])
+    networks = {}
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        parts = re.split(r"(?<!\\):", line, maxsplit=2)
+        if len(parts) < 2:
+            continue
+        ssid = parts[0].replace("\\:", ":").strip()
+        if not ssid:
+            continue
+        try:
+            signal = int(parts[1] or "0")
+        except ValueError:
+            signal = 0
+        security = parts[2].replace("\\:", ":").strip() if len(parts) > 2 else ""
+        if ssid not in networks or signal > networks[ssid]["signal"]:
+            networks[ssid] = {"ssid": ssid, "signal": signal, "security": security}
+    return sorted(networks.values(), key=lambda item: item["signal"], reverse=True)
+
+
+def apply_hotspot_mode_later():
+    time.sleep(1)
+    run_quiet(["systemctl", "disable", "--now", "NetworkManager"])
+    run_quiet(["systemctl", "enable", "--now", "teslausb-portal-network.service"])
+    run_quiet(["systemctl", "enable", "--now", "dnsmasq"])
+    run_quiet(["systemctl", "enable", "--now", "hostapd"])
+
+
+def apply_wifi_mode_later(ssid, password=None):
+    time.sleep(1)
+    run_quiet(["systemctl", "disable", "--now", "hostapd"])
+    run_quiet(["systemctl", "disable", "--now", "dnsmasq"])
+    run_quiet(["systemctl", "disable", "--now", "teslausb-portal-network.service"])
+    run_quiet(["systemctl", "enable", "--now", "NetworkManager"])
+    run_quiet(["nmcli", "radio", "wifi", "on"])
+    if password:
+        run_quiet(["nmcli", "dev", "wifi", "connect", ssid, "password", password, "ifname", "wlan0"])
+    else:
+        run_quiet(["nmcli", "dev", "wifi", "connect", ssid, "ifname", "wlan0"])
+
+
+def schedule_network_mode(mode, ssid="", password=""):
+    mode = str(mode or "").strip().lower()
+    if mode == "hotspot":
+        threading.Thread(target=apply_hotspot_mode_later, daemon=True).start()
+        return {"ok": True, "mode": "hotspot", "message": "Switching to hotspot. Reconnect to Glovebox and open http://192.168.50.1."}
+    if mode == "wifi":
+        ssid = str(ssid or "").strip()
+        password = str(password or "")
+        if not ssid:
+            raise ValueError("Choose a Wi-Fi network first.")
+        if password and (len(password) < 8 or len(password) > 63):
+            raise ValueError("Wi-Fi password must be 8-63 characters.")
+        threading.Thread(target=apply_wifi_mode_later, args=(ssid, password or None), daemon=True).start()
+        return {"ok": True, "mode": "wifi", "message": f"Switching to Wi-Fi network {ssid}."}
+    raise ValueError("Unknown network mode.")
+
+
 def parse_multipart(headers, stream):
     content_type = headers.get("Content-Type", "")
     match = re.search(r"boundary=(?P<boundary>[^;]+)", content_type)
@@ -476,6 +563,7 @@ def get_status():
     status["home_counts"] = home_counts()
     status["home_folder_sizes"] = home_folder_sizes()
     status["hotspot"] = hotspot_status()
+    status["wifi"] = wifi_status()
     status["upload_targets"] = {
         key: {
             "label": value["label"],
@@ -859,6 +947,8 @@ class PortalHandler(BaseHTTPRequestHandler):
                 self.album_art(parsed)
             elif parsed.path == "/api/music-metadata":
                 self.handle_music_metadata_get(parsed)
+            elif parsed.path == "/api/wifi-scan":
+                self.send_json({"networks": scan_wifi_networks()})
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
         except Exception as exc:
@@ -911,6 +1001,8 @@ class PortalHandler(BaseHTTPRequestHandler):
                 self.handle_media_delete()
             elif parsed.path == "/api/hotspot":
                 self.handle_hotspot_update()
+            elif parsed.path == "/api/network-mode":
+                self.handle_network_mode()
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
         except Exception as exc:
@@ -1106,6 +1198,10 @@ class PortalHandler(BaseHTTPRequestHandler):
         ssid = payload.get("ssid", "")
         password = payload.get("password") or None
         self.send_json(update_hotspot_settings(ssid, password))
+
+    def handle_network_mode(self):
+        payload = self.read_json_body()
+        self.send_json(schedule_network_mode(payload.get("mode"), payload.get("ssid", ""), payload.get("password", "")))
 
 
 APP_HTML = r"""<!doctype html>
@@ -1335,6 +1431,11 @@ APP_HTML = r"""<!doctype html>
   .kv-k { color: var(--muted); font-size: 12.5px; }
   .kv-v { font-size: 13px; text-align: right; }
   .settings-form { display: grid; gap: 12px; margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--hairline); }
+  .mode-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .wifi-list { display: grid; gap: 6px; margin-top: 8px; }
+  .wifi-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; padding: 8px 10px; border: 1px solid var(--hairline); border-radius: 7px; background: var(--bg); }
+  .wifi-row-name { font-size: 12.5px; }
+  .wifi-row-meta { color: var(--faint); font-size: 11px; }
   .log-pre { white-space: pre-wrap; background: var(--bg); color: var(--muted); border: 1px solid var(--hairline); border-radius: 6px; padding: 14px; max-height: 320px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; line-height: 1.55; }
   .tg-row { display: flex; justify-content: space-between; align-items: center; padding: 11px 0; border: 0; background: transparent; width: 100%; border-bottom: 1px solid var(--hairline); color: inherit; text-align: left; }
   .tg-label { font-size: 13px; }
@@ -2856,10 +2957,13 @@ function renderSettings() {
   if (settingsSection === "connection") {
     const mounted = Object.values(status.drives || {}).filter(d => d.mounted).length;
     const hotspot = status.hotspot || {};
+    const wifi = status.wifi || {};
     main.innerHTML = `<div class="card card-pad">
       <h2 class="set-section-title">Portal</h2>
       <div class="kv"><span class="kv-k">Host</span><span class="kv-v mono">teslausb.local</span></div>
       <div class="kv"><span class="kv-k">Fallback</span><span class="kv-v mono">192.168.50.1</span></div>
+      <div class="kv"><span class="kv-k">Network mode</span><span class="kv-v mono">${esc(wifi.mode || "unknown")}</span></div>
+      <div class="kv"><span class="kv-k">Connected Wi-Fi</span><span class="kv-v mono">${esc(wifi.current_ssid || "none")}</span></div>
       <div class="kv"><span class="kv-k">Pi serial</span><span class="kv-v mono">${esc(hotspot.serial || "unknown")}</span></div>
       <div class="kv"><span class="kv-k">Hotspot</span><span class="kv-v mono">${esc(hotspot.ssid || "unknown")}</span></div>
       <div class="kv"><span class="kv-k">USB gadget</span><span class="kv-v mono">${esc(status.usb || "unknown")}</span></div>
@@ -2873,6 +2977,21 @@ function renderSettings() {
           <button class="btn btn-solid" type="submit">Save hotspot</button>
         </div>
       </form>
+      <div class="settings-form">
+        <h2 class="set-section-title">Network Mode</h2>
+        <div class="mode-actions">
+          <button class="btn ${wifi.mode === "hotspot" ? "btn-solid" : ""}" type="button" onclick="switchNetworkMode('hotspot')">Hotspot</button>
+          <button class="btn ${wifi.mode === "wifi" ? "btn-solid" : ""}" type="button" onclick="switchNetworkMode('wifi')">Wi-Fi</button>
+        </div>
+        <div class="field"><label>Wi-Fi network</label><input id="wifiSsid" value="${esc(wifi.current_ssid || "")}" autocomplete="off"></div>
+        <div class="field"><label>Wi-Fi password</label><input id="wifiPassword" type="password" placeholder="Required for a new network" autocomplete="new-password"></div>
+        <div class="edit-actions">
+          <button class="btn" type="button" onclick="scanWifiNetworks()">Scan nearby Wi-Fi</button>
+          <button class="btn btn-solid" type="button" onclick="switchNetworkMode('wifi')">Connect Wi-Fi</button>
+        </div>
+        <div id="wifiScanResults" class="wifi-list"></div>
+        <div class="file-empty-s">Switching modes changes how you reach Glovebox. Hotspot mode uses <span class="mono">http://192.168.50.1</span>; Wi-Fi mode uses the Pi address on your router.</div>
+      </div>
     </div>`;
   } else if (settingsSection === "activity") {
     main.innerHTML = `<div class="card card-pad">
@@ -2897,6 +3016,48 @@ async function saveHotspotSettings(event) {
     status.hotspot = hotspot;
     toast("Hotspot updated");
     renderSettings();
+  } catch (e) {
+    toast(e.message, "err");
+  }
+}
+
+function selectWifiNetwork(ssid) {
+  const input = document.getElementById("wifiSsid");
+  if (input) input.value = ssid;
+}
+
+async function scanWifiNetworks() {
+  const wrap = document.getElementById("wifiScanResults");
+  if (!wrap) return;
+  wrap.innerHTML = `<div class="file-empty-s mono">Scanning…</div>`;
+  try {
+    const data = await api("/api/wifi-scan");
+    const networks = data.networks || [];
+    wrap.innerHTML = networks.length ? networks.map(net => `
+      <button class="wifi-row" type="button" onclick="selectWifiNetwork(${jsAttr(net.ssid)})">
+        <span class="wifi-row-name">${esc(net.ssid)}</span>
+        <span class="wifi-row-meta mono">${esc(net.signal)}% ${esc(net.security || "open")}</span>
+      </button>
+    `).join("") : `<div class="file-empty-s mono">No networks found.</div>`;
+  } catch (e) {
+    wrap.innerHTML = `<div class="file-empty-s mono">${esc(e.message)}</div>`;
+  }
+}
+
+async function switchNetworkMode(mode) {
+  const ssid = document.getElementById("wifiSsid")?.value || "";
+  const password = document.getElementById("wifiPassword")?.value || "";
+  const message = mode === "hotspot"
+    ? "Switch to hotspot mode? This page may disconnect. Reconnect to the Glovebox Wi-Fi network and open http://192.168.50.1."
+    : `Switch to Wi-Fi mode${ssid ? ` on ${ssid}` : ""}? This page may disconnect while the Pi joins your router.`;
+  if (!confirm(message)) return;
+  try {
+    const data = await api("/api/network-mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode, ssid, password })
+    });
+    toast(data.message || "Network mode changing");
   } catch (e) {
     toast(e.message, "err");
   }
