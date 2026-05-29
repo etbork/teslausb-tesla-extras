@@ -201,6 +201,25 @@ def directory_thumbnail(root, rel):
     return ""
 
 
+def is_hidden_event_support_file(drive_key, parent_rel, name):
+    if drive_key != "cam":
+        return False
+    parts = [part for part in parent_rel.split("/") if part]
+    if len(parts) != 3 or parts[0] != "TeslaCam" or parts[1] not in {"SavedClips", "SentryClips"}:
+        return False
+    lowered = name.lower()
+    return lowered in {
+        "event.json",
+        "event.mp4",
+        "thumb.png",
+        "thumb.jpg",
+        "thumb.jpeg",
+        "thumbnail.png",
+        "thumbnail.jpg",
+        "thumbnail.jpeg",
+    }
+
+
 def count_files_under(root, rel):
     target, _ = safe_join(root, rel)
     return count_files(target) if target.exists() else 0
@@ -377,6 +396,8 @@ def list_directory(drive_key, rel):
         raise ValueError("Browse path is not a directory.")
     items = []
     for child in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+        if child.is_file() and is_hidden_event_support_file(drive_key, rel, child.name):
+            continue
         try:
             stat = child.stat()
         except OSError:
