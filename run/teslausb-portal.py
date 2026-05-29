@@ -1113,7 +1113,7 @@ APP_HTML = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TeslaDrive</title>
+<title>Glovebox</title>
 <style>
   :root {
     --bg: oklch(0.16 0.005 80);
@@ -1599,8 +1599,8 @@ APP_HTML = r"""<!doctype html>
 <div id="sessionFloat" class="session-float hidden"></div>
 <div id="splash" class="splash">
   <div class="splash-card">
-    <h2 class="splash-title">Connect to TeslaDrive</h2>
-    <p class="splash-sub">Start a 5 minute session to browse, download, and add files. When time is up, TeslaDrive switches back to the car automatically.</p>
+    <h2 class="splash-title">Connect to Glovebox</h2>
+    <p class="splash-sub">Start a 5 minute session to browse, download, and add files. When time is up, Glovebox switches back to the car automatically.</p>
     <div class="splash-actions">
       <button class="btn btn-solid" type="button" onclick="startTimedSession()">Start 5 minute session</button>
       <button class="btn" type="button" onclick="hideSplash()">View only</button>
@@ -1956,7 +1956,7 @@ async function refreshStatusOnly() {
 function renderBrand() {
   const slot = document.getElementById("brandSlot");
   if (currentPage === "home") {
-    slot.innerHTML = `<div class="brand-name">TeslaDrive</div>`;
+    slot.innerHTML = `<div class="brand-name">Glovebox</div>`;
   } else {
     slot.innerHTML = `<button class="back-btn" type="button" onclick="showPage('home')">${svgIcon("back", 16)}<span>Home</span></button>`;
   }
@@ -2007,7 +2007,7 @@ function renderSessionFloat(show = null) {
   el.innerHTML = `
     <div>
       <div class="session-float-title">Need more time? ${esc(remainingLabel)}</div>
-      <div class="session-float-sub">${urgent ? "TeslaDrive is switching back soon." : "Your transfer session ends soon."}</div>
+      <div class="session-float-sub">${urgent ? "Glovebox is switching back soon." : "Your transfer session ends soon."}</div>
     </div>
     <div class="session-float-actions">
       <button class="btn btn-solid btn-sm" type="button" onclick="extendSession()">Extend 5 minutes</button>
@@ -2726,7 +2726,7 @@ function confirmDeleteMedia(drive, path, name) {
   document.getElementById("editModal").classList.remove("hidden");
   document.getElementById("editBody").innerHTML = `
     <div class="edit-form">
-      <div class="file-empty-s">This removes the file from TeslaDrive.</div>
+      <div class="file-empty-s">This removes the file from Glovebox.</div>
       <div class="field"><label>File</label><input value="${esc(name || path)}" disabled></div>
       <div class="edit-actions">
         <button class="btn" type="button" onclick="closeEditModal()">Cancel</button>
@@ -2869,12 +2869,10 @@ function renderSettings() {
       <div class="kv"><span class="kv-k">USB gadget</span><span class="kv-v mono">${esc(status.usb || "unknown")}</span></div>
       <div class="kv"><span class="kv-k">Transfer session</span><span class="kv-v mono">${status.session_active ? "active" : "inactive"}</span></div>
       <div class="kv"><span class="kv-k">Drives mounted</span><span class="kv-v mono">${mounted} of ${Object.keys(status.drives || {}).length}</span></div>
-      <div class="kv"><span class="kv-k">Uploads</span><span class="kv-v mono">${status.uploads_enabled ? "enabled" : "disabled"}</span></div>
       <form class="settings-form" onsubmit="saveHotspotSettings(event)">
         <h2 class="set-section-title">Hotspot Wi-Fi</h2>
         <div class="field"><label>Network name</label><input name="ssid" value="${esc(hotspot.ssid || hotspot.default_ssid || "")}" maxlength="32" autocomplete="off"></div>
         <div class="field"><label>New password</label><input name="password" type="password" placeholder="Leave blank to keep current password" minlength="8" maxlength="63" autocomplete="new-password"></div>
-        <div class="file-empty-s">Default name: <span class="mono">${esc(hotspot.default_ssid || "Glovebox")}</span>. WPA2 passwords must be at least 8 characters, so the serial fallback is <span class="mono">${esc(hotspot.default_password_hint || "")}</span>.</div>
         <div class="edit-actions">
           <button class="btn btn-solid" type="submit">Save hotspot</button>
         </div>
