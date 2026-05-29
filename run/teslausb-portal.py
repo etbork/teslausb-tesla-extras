@@ -2206,11 +2206,7 @@ function fileRow(item, drive, onDelete, onOpen) {
        ${playAction}
        ${menuAction || `<a class="icon-btn" href="${item.download}" title="Download" onclick="event.stopPropagation()">${svgIcon("download", 14)}</a>`}
        ${status.deletes_enabled && status.session_active ? `<button class="icon-btn icon-btn-danger" title="Delete" onclick="event.stopPropagation(); ${onDelete}">${svgIcon("trash", 14)}</button>` : ""}</span>`;
-  const click = item.is_dir
-    ? `onclick="${onOpen || ""}"`
-    : isVideo(item)
-      ? `onclick="playVideo(${jsAttr(inlineUrl(item.download))}, ${jsAttr(item.name)})"`
-      : `onclick="window.location.href='${item.download}'"`;
+  const click = item.is_dir && onOpen ? `onclick="${onOpen}"` : "";
   return `<tr ${click}>
     <td class="file-tbl-icon">${previewCell(item, drive)}</td>
     <td class="file-name">${esc(item.name)}</td>
