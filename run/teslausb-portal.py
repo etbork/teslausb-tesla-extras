@@ -1011,12 +1011,13 @@ APP_HTML = r"""<!doctype html>
   .video-modebar .btn.on { background: var(--text); color: var(--bg); border-color: var(--text); }
   .video-grid { display: grid; grid-template-areas: "front" "back"; grid-template-columns: 1fr; gap: 8px; align-items: center; }
   .video-grid.mode-2 { grid-template-areas: "front" "back"; }
-  .video-grid.mode-4 { grid-template-areas: ". front ." "left back right"; grid-template-columns: 1fr 1.25fr 1fr; }
+  .video-grid.mode-4 { grid-template-areas: ". front ." "left center right" ". back ."; grid-template-columns: 1fr 1.1fr 1fr; }
   .video-cell { min-width: 0; border: 1px solid var(--hairline-2); border-radius: 8px; overflow: hidden; background: black; }
   .video-cell-front { grid-area: front; }
   .video-cell-back { grid-area: back; }
   .video-cell-left { grid-area: left; }
   .video-cell-right { grid-area: right; }
+  .video-cell-center { grid-area: center; border-color: transparent; background: transparent; min-height: 24px; }
   .video-cell-single { grid-column: 1 / -1; }
   .video-cell-label { display: flex; justify-content: space-between; gap: 8px; padding: 7px 9px; background: var(--surface); color: var(--muted); font-size: 11px; }
   .video-player { width: 100%; aspect-ratio: 16 / 9; background: black; display: block; object-fit: contain; }
@@ -1411,12 +1412,17 @@ function toggleVideoViewer() {
     return;
   }
   const lead = videos[0];
-  for (const video of videos) video.muted = true;
+  for (const video of videos) {
+    video.muted = true;
+    video.defaultMuted = true;
+    if (video.readyState < 2) video.load();
+  }
   lead.play().then(() => {
     videoViewer.playing = true;
     const leadTime = lead.currentTime;
     for (const video of videos.slice(1)) {
       video.currentTime = leadTime;
+      video.playbackRate = lead.playbackRate;
       video.play().catch(() => {});
     }
     updateVideoViewerUI();
@@ -1481,6 +1487,7 @@ function renderVideoGrid() {
     grid.innerHTML = [
       buildVideoCell("front", byCamera.front),
       buildVideoCell("left", left),
+      `<div class="video-cell-center"></div>`,
       buildVideoCell("right", right),
       buildVideoCell("back", byCamera.back),
     ].join("");
@@ -1851,7 +1858,7 @@ function clipStack(files) {
   const front = files.find(file => cameraKey(file.name) === "front");
   const file = front || files[0];
   const key = clipGroupKey(file);
-  return `<span class="clip-stack"><button class="dash-thumb dash-thumb-tile icon-btn" type="button" title="Open viewer" onclick="event.stopPropagation(); openClipGroupViewer(${jsAttr(key)})">${svgIcon("play", 14)}<span>Front</span></button></span>`;
+  return `<span class="clip-stack"><button class="dash-thumb icon-btn" type="button" title="Open viewer" onclick="event.stopPropagation(); openClipGroupViewer(${jsAttr(key)})"><video class="dash-thumb" src="${inlineUrl(file.download)}#t=0.1" muted preload="metadata" playsinline></video></button></span>`;
 }
 
 function clipGroupRow(group) {
