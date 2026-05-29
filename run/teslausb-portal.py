@@ -1121,7 +1121,7 @@ APP_HTML = r"""<!doctype html>
     .file-tbl td { padding: 0; border-bottom: 0; }
     .file-tbl-icon { grid-row: 1 / span 3; width: auto; align-self: center; display: flex; align-items: center; }
     .file-name { overflow-wrap: anywhere; align-self: center; }
-    .file-tbl-actions { min-width: 0; text-align: right; margin-top: 10px; grid-column: 2 / 4; }
+    .file-tbl-actions { min-width: 0; text-align: left; margin-top: 10px; grid-column: 2 / 4; }
     .clip-row .file-tbl-actions { display: none; }
     .clip-size-cell { display: none !important; }
     .audio-row-actions { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 28px; gap: 10px; align-items: center; }
@@ -1983,11 +1983,11 @@ function renderDashcamRows() {
     return;
   }
   const entries = groupDashcamItems(dashcamItems);
-  const totalEntries = dashcamTotalEntries || entries.length;
+  const totalEntries = entries.length;
   const totalPages = Math.max(1, Math.ceil(totalEntries / DASHCAM_PAGE_SIZE));
   dashcamPage = Math.min(Math.max(1, dashcamPage), totalPages);
-  const start = dashcamFolder === "TeslaCam/RecentClips" ? (dashcamPage - 1) * DASHCAM_PAGE_SIZE : 0;
-  const visible = dashcamFolder === "TeslaCam/RecentClips" ? entries.slice(start, start + DASHCAM_PAGE_SIZE) : entries;
+  const start = (dashcamPage - 1) * DASHCAM_PAGE_SIZE;
+  const visible = entries.slice(start, start + DASHCAM_PAGE_SIZE);
   let rows = visible.map(entry => {
     if (entry.type === "group") return clipGroupRow(entry);
     const it = entry.item;
@@ -2052,9 +2052,7 @@ async function loadDashcam() {
     return;
   }
   try {
-    const shouldPageServerSide = dashcamFolder !== "TeslaCam/RecentClips";
-    const offset = shouldPageServerSide ? (dashcamPage - 1) * DASHCAM_PAGE_SIZE : 0;
-    const list = await api(`/api/list?drive=cam&path=${encodeURIComponent(dashcamFolder)}${shouldPageServerSide ? `&limit=${DASHCAM_PAGE_SIZE}&offset=${offset}` : ""}`);
+    const list = await api(`/api/list?drive=cam&path=${encodeURIComponent(dashcamFolder)}`);
     dashcamItems = list.items || [];
     dashcamTotalEntries = list.total || dashcamItems.length;
     renderDashcamRows();
