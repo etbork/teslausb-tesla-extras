@@ -1005,7 +1005,11 @@ APP_HTML = r"""<!doctype html>
   .video-shell { width: min(1040px, 100%); max-height: calc(100vh - 32px); display: grid; gap: 10px; }
   .video-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .video-title { min-width: 0; font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .video-grid { display: grid; grid-template-areas: ". front ." "left back right"; grid-template-columns: 1fr 1.25fr 1fr; gap: 8px; align-items: center; }
+  .video-modebar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .video-modebar .btn.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .video-grid { display: grid; grid-template-areas: "front" "back"; grid-template-columns: 1fr; gap: 8px; align-items: center; }
+  .video-grid.mode-2 { grid-template-areas: "front" "back"; }
+  .video-grid.mode-4 { grid-template-areas: ". front ." "left back right"; grid-template-columns: 1fr 1.25fr 1fr; }
   .video-cell { min-width: 0; border: 1px solid var(--hairline-2); border-radius: 8px; overflow: hidden; background: black; }
   .video-cell-front { grid-area: front; }
   .video-cell-back { grid-area: back; }
@@ -1071,7 +1075,7 @@ APP_HTML = r"""<!doctype html>
     .splash-card, .extend-card { padding: 22px; }
     .video-modal { padding: 8px; align-items: start; }
     .video-shell { max-height: calc(100vh - 16px); overflow: auto; }
-    .video-grid { grid-template-areas: "front" "left" "right" "back"; grid-template-columns: 1fr; }
+    .video-grid, .video-grid.mode-2, .video-grid.mode-4 { grid-template-areas: "front" "left" "right" "back"; grid-template-columns: 1fr; }
     .video-controls { grid-template-columns: auto 1fr; }
     .video-time { grid-column: 1 / -1; text-align: center; }
   }
@@ -1227,6 +1231,7 @@ APP_HTML = r"""<!doctype html>
       <div id="videoTitle" class="video-title mono"></div>
       <button class="btn video-close" type="button" onclick="closeVideo()">Close</button>
     </div>
+    <div id="videoModebar" class="video-modebar"></div>
     <div id="videoGrid" class="video-grid"></div>
     <div class="video-controls">
       <button id="videoPlayButton" class="icon-btn" type="button" title="Play / pause" onclick="toggleVideoViewer()">${svgIcon("play", 15)}</button>
@@ -1295,7 +1300,7 @@ let settingsSection = "connection";
 let sessionDeadline = 0;
 let extendPromptShown = false;
 let dashcamPage = 1;
-let videoViewer = { playing: false, syncing: false };
+let videoViewer = { playing: false, syncing: false, files: [], title: "", mode: 1, side: "repeater" };
 const DASHCAM_PAGE_SIZE = 10;
 const SESSION_MS = 5 * 60 * 1000;
 const EXTEND_PROMPT_MS = 2 * 60 * 1000;
@@ -1436,25 +1441,69 @@ function buildVideoCell(slot, file, single = false) {
   </div>`;
 }
 
-function openVideoViewer(files, title) {
-  pauseAllMedia();
-  videoViewer = { playing: false, syncing: false };
-  const modal = document.getElementById("videoModal");
+function videoFilesByCamera(files) {
+  return Object.fromEntries((files || []).map(file => [cameraKey(file.name), file]));
+}
+
+function renderVideoModebar() {
+  const bar = document.getElementById("videoModebar");
+  const hasMulti = videoViewer.files.length > 1;
+  if (!hasMulti) {
+    bar.innerHTML = "";
+    return;
+  }
+  bar.innerHTML = `
+    <button class="btn btn-sm ${videoViewer.mode === 1 ? "on" : ""}" type="button" onclick="setVideoMode(1)">1</button>
+    <button class="btn btn-sm ${videoViewer.mode === 2 ? "on" : ""}" type="button" onclick="setVideoMode(2)">2</button>
+    <button class="btn btn-sm ${videoViewer.mode === 4 ? "on" : ""}" type="button" onclick="setVideoMode(4)">4</button>
+    ${videoViewer.mode === 4 ? `<button class="btn btn-sm" type="button" onclick="toggleVideoSide()">${videoViewer.side === "pillar" ? "Pillars" : "Repeaters"}</button>` : ""}
+  `;
+}
+
+function renderVideoGrid() {
   const grid = document.getElementById("videoGrid");
-  const videoTitle = document.getElementById("videoTitle");
-  const list = Array.isArray(files) ? files : [];
-  videoTitle.textContent = title || "Dashcam viewer";
-  if (list.length <= 1) {
-    grid.innerHTML = buildVideoCell("front", list[0], true);
-  } else {
-    const byCamera = Object.fromEntries(list.map(file => [cameraKey(file.name), file]));
+  const files = videoViewer.files;
+  const byCamera = videoFilesByCamera(files);
+  renderVideoModebar();
+  grid.className = `video-grid mode-${videoViewer.mode}`;
+  if (files.length <= 1 || videoViewer.mode === 1) {
+    grid.innerHTML = buildVideoCell("front", byCamera.front || files[0], true);
+  } else if (videoViewer.mode === 2) {
     grid.innerHTML = [
       buildVideoCell("front", byCamera.front),
-      buildVideoCell("left", byCamera.left_repeater || byCamera.left_pillar),
-      buildVideoCell("right", byCamera.right_repeater || byCamera.right_pillar),
+      buildVideoCell("back", byCamera.back),
+    ].join("");
+  } else {
+    const left = videoViewer.side === "pillar" ? byCamera.left_pillar : byCamera.left_repeater;
+    const right = videoViewer.side === "pillar" ? byCamera.right_pillar : byCamera.right_repeater;
+    grid.innerHTML = [
+      buildVideoCell("front", byCamera.front),
+      buildVideoCell("left", left),
+      buildVideoCell("right", right),
       buildVideoCell("back", byCamera.back),
     ].join("");
   }
+  wireViewerVideos();
+  updateVideoViewerUI();
+}
+
+function setVideoMode(mode) {
+  const current = viewerVideos()[0]?.currentTime || 0;
+  videoViewer.mode = mode;
+  videoViewer.playing = false;
+  renderVideoGrid();
+  seekVideoViewer(current);
+}
+
+function toggleVideoSide() {
+  const current = viewerVideos()[0]?.currentTime || 0;
+  videoViewer.side = videoViewer.side === "pillar" ? "repeater" : "pillar";
+  videoViewer.playing = false;
+  renderVideoGrid();
+  seekVideoViewer(current);
+}
+
+function wireViewerVideos() {
   for (const video of viewerVideos()) {
     video.muted = true;
     video.setAttribute("muted", "");
@@ -1475,6 +1524,15 @@ function openVideoViewer(files, title) {
       }
     });
   }
+}
+
+function openVideoViewer(files, title) {
+  pauseAllMedia();
+  videoViewer = { playing: false, syncing: false, files: Array.isArray(files) ? files : [], title: title || "Dashcam viewer", mode: 1, side: "repeater" };
+  const modal = document.getElementById("videoModal");
+  const videoTitle = document.getElementById("videoTitle");
+  videoTitle.textContent = videoViewer.title;
+  renderVideoGrid();
   modal.classList.remove("hidden");
   updateVideoViewerUI();
 }
@@ -1491,7 +1549,8 @@ function closeVideo() {
     video.load();
   }
   document.getElementById("videoGrid").innerHTML = "";
-  videoViewer = { playing: false, syncing: false };
+  document.getElementById("videoModebar").innerHTML = "";
+  videoViewer = { playing: false, syncing: false, files: [], title: "", mode: 1, side: "repeater" };
   modal.classList.add("hidden");
 }
 
@@ -1790,7 +1849,7 @@ function clipStack(files) {
   const front = files.find(file => cameraKey(file.name) === "front");
   const file = front || files[0];
   const key = clipGroupKey(file);
-  return `<span class="clip-stack"><button class="dash-thumb icon-btn" type="button" title="Open multi-camera viewer" onclick="event.stopPropagation(); openClipGroupViewer(${jsAttr(key)})">${svgIcon("play", 17)}</button></span>`;
+  return `<span class="clip-stack"><button class="dash-thumb icon-btn" type="button" title="Open viewer" onclick="event.stopPropagation(); openClipGroupViewer(${jsAttr(key)})"><video class="dash-thumb" src="${inlineUrl(file.download)}#t=0.1" muted preload="metadata" playsinline></video></button></span>`;
 }
 
 function clipGroupRow(group) {
@@ -1808,7 +1867,7 @@ function clipGroupRow(group) {
       </span>
     </div>`).join("")}
   </div></td></tr>` : "";
-  return `<tr onclick="toggleClipGroup(${jsAttr(group.key)})">
+  return `<tr onclick="openClipGroupViewer(${jsAttr(group.key)})">
     <td class="file-tbl-icon">${clipStack(group.files)}</td>
     <td class="file-name"><span class="clip-name"><span>${esc(formatClipTime(group.key))}</span><span class="clip-sub mono">${esc(group.key)}</span></span></td>
     <td class="mono num-faint">${esc(summary)}</td>
