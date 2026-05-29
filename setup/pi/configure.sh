@@ -39,8 +39,14 @@ function install_portal_packages () {
 }
 
 function configure_portal_hotspot () {
-    local ssid="${PORTAL_WIFI_SSID:-TeslaUSB}"
-    local password="${PORTAL_WIFI_PASSWORD:-teslausbportal}"
+    local serial="$(awk -F ': ' '/^Serial/ {print $2}' /proc/cpuinfo 2>/dev/null | tail -n 1)"
+    local serial_last4="${serial: -4}"
+    if [ -z "$serial_last4" ]
+    then
+        serial_last4="0000"
+    fi
+    local ssid="${PORTAL_WIFI_SSID:-Glovebox-$serial}"
+    local password="${PORTAL_WIFI_PASSWORD:-$serial_last4$serial_last4}"
     local address="${PORTAL_ADDRESS:-192.168.50.1}"
     local dhcp_start="${PORTAL_DHCP_START:-192.168.50.20}"
     local dhcp_end="${PORTAL_DHCP_END:-192.168.50.80}"

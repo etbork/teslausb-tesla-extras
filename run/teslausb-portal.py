@@ -22,6 +22,7 @@ PORT = int(os.environ.get("PORTAL_PORT", "80"))
 UPLOADS_ENABLED = os.environ.get("PORTAL_UPLOADS_ENABLED", "true").lower() == "true"
 DELETES_ENABLED = os.environ.get("PORTAL_DELETES_ENABLED", "false").lower() == "true"
 LOG_FILES = ["/mutable/portal.log"]
+HOSTAPD_CONF = Path(os.environ.get("PORTAL_HOSTAPD_CONF", "/etc/hostapd/hostapd.conf"))
 SESSION_TIMEOUT_SECONDS = int(os.environ.get("PORTAL_SESSION_TIMEOUT_SECONDS", "300"))
 SESSION_EXTEND_SECONDS = int(os.environ.get("PORTAL_SESSION_EXTEND_SECONDS", str(SESSION_TIMEOUT_SECONDS)))
 SESSION_DEADLINE_FILE = Path(os.environ.get("PORTAL_SESSION_DEADLINE_FILE", "/run/teslausb-portal-session.deadline"))
@@ -45,6 +46,7 @@ UPLOAD_TARGETS = {
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()+-]{0,120}$")
 MAX_ART_BYTES = 8 * 1024 * 1024
+SAFE_SSID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}$")
 
 
 def run_helper(action):
@@ -95,6 +97,95 @@ def validate_filename(name, allowed_extensions, fixed_name=None):
     if suffix not in allowed_extensions:
         raise ValueError(f"Unsupported file type: {suffix or '(none)'}")
     return base
+
+
+def pi_serial():
+    try:
+        for line in Path("/proc/cpuinfo").read_text(errors="replace").splitlines():
+            if line.lower().startswith("serial"):
+                serial = line.split(":", 1)[1].strip()
+                if serial:
+                    return serial
+    except OSError:
+        pass
+    return ""
+
+
+def default_hotspot_ssid():
+    serial = pi_serial()
+    return f"Glovebox-{serial}" if serial else "Glovebox"
+
+
+def default_hotspot_password():
+    serial = pi_serial()
+    last4 = serial[-4:] if len(serial) >= 4 else "0000"
+    return last4 * 2
+
+
+def read_hostapd_config():
+    data = {}
+    try:
+        for raw_line in HOSTAPD_CONF.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            data[key.strip()] = value.strip()
+    except OSError:
+        pass
+    return data
+
+
+def hotspot_status():
+    config = read_hostapd_config()
+    serial = pi_serial()
+    return {
+        "serial": serial,
+        "ssid": config.get("ssid") or default_hotspot_ssid(),
+        "default_ssid": default_hotspot_ssid(),
+        "default_password_hint": default_hotspot_password(),
+        "password_min_length": 8,
+    }
+
+
+def validate_hotspot_settings(ssid, password=None):
+    ssid = str(ssid or "").strip()
+    if not SAFE_SSID.match(ssid):
+        raise ValueError("Hotspot name must be 1-32 characters and use letters, numbers, spaces, dots, dashes, or underscores.")
+    password = None if password is None else str(password)
+    if password:
+        if len(password) < 8 or len(password) > 63:
+            raise ValueError("Hotspot password must be 8-63 characters for WPA2.")
+        if any(ord(ch) < 32 or ord(ch) > 126 for ch in password):
+            raise ValueError("Hotspot password must use standard printable characters.")
+    return ssid, password
+
+
+def update_hotspot_settings(ssid, password=None):
+    ssid, password = validate_hotspot_settings(ssid, password)
+    config = read_hostapd_config()
+    if not config:
+        raise ValueError("Hotspot config was not found on this Pi.")
+    lines = HOSTAPD_CONF.read_text(encoding="utf-8", errors="replace").splitlines()
+    saw_ssid = False
+    saw_password = False
+    updated = []
+    for line in lines:
+        if line.startswith("ssid="):
+            updated.append(f"ssid={ssid}")
+            saw_ssid = True
+        elif password and line.startswith("wpa_passphrase="):
+            updated.append(f"wpa_passphrase={password}")
+            saw_password = True
+        else:
+            updated.append(line)
+    if not saw_ssid:
+        updated.append(f"ssid={ssid}")
+    if password and not saw_password:
+        updated.append(f"wpa_passphrase={password}")
+    HOSTAPD_CONF.write_text("\n".join(updated) + "\n", encoding="utf-8")
+    subprocess.run(["systemctl", "restart", "hostapd"], check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    return hotspot_status()
 
 
 def parse_multipart(headers, stream):
@@ -385,6 +476,7 @@ def get_status():
     status["session_timeout_seconds"] = SESSION_TIMEOUT_SECONDS
     status["home_counts"] = home_counts()
     status["home_folder_sizes"] = home_folder_sizes()
+    status["hotspot"] = hotspot_status()
     status["upload_targets"] = {
         key: {
             "label": value["label"],
@@ -818,6 +910,8 @@ class PortalHandler(BaseHTTPRequestHandler):
                 self.handle_delete()
             elif parsed.path == "/api/media-delete":
                 self.handle_media_delete()
+            elif parsed.path == "/api/hotspot":
+                self.handle_hotspot_update()
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
         except Exception as exc:
@@ -1007,6 +1101,12 @@ class PortalHandler(BaseHTTPRequestHandler):
         if not status["drives"].get(drive_key, {}).get("mounted"):
             raise ValueError("Drive is not mounted.")
         self.send_json(delete_media_path(drive_key, rel))
+
+    def handle_hotspot_update(self):
+        payload = self.read_json_body()
+        ssid = payload.get("ssid", "")
+        password = payload.get("password") or None
+        self.send_json(update_hotspot_settings(ssid, password))
 
 
 APP_HTML = r"""<!doctype html>
@@ -1235,6 +1335,7 @@ APP_HTML = r"""<!doctype html>
   .kv:last-child { border-bottom: 0; }
   .kv-k { color: var(--muted); font-size: 12.5px; }
   .kv-v { font-size: 13px; text-align: right; }
+  .settings-form { display: grid; gap: 12px; margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--hairline); }
   .log-pre { white-space: pre-wrap; background: var(--bg); color: var(--muted); border: 1px solid var(--hairline); border-radius: 6px; padding: 14px; max-height: 320px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; line-height: 1.55; }
   .tg-row { display: flex; justify-content: space-between; align-items: center; padding: 11px 0; border: 0; background: transparent; width: 100%; border-bottom: 1px solid var(--hairline); color: inherit; text-align: left; }
   .tg-label { font-size: 13px; }
@@ -2759,20 +2860,52 @@ function renderSettings() {
   const main = document.getElementById("setMain");
   if (settingsSection === "connection") {
     const mounted = Object.values(status.drives || {}).filter(d => d.mounted).length;
+    const hotspot = status.hotspot || {};
     main.innerHTML = `<div class="card card-pad">
       <h2 class="set-section-title">Portal</h2>
       <div class="kv"><span class="kv-k">Host</span><span class="kv-v mono">teslausb.local</span></div>
       <div class="kv"><span class="kv-k">Fallback</span><span class="kv-v mono">192.168.50.1</span></div>
+      <div class="kv"><span class="kv-k">Pi serial</span><span class="kv-v mono">${esc(hotspot.serial || "unknown")}</span></div>
+      <div class="kv"><span class="kv-k">Hotspot</span><span class="kv-v mono">${esc(hotspot.ssid || "unknown")}</span></div>
       <div class="kv"><span class="kv-k">USB gadget</span><span class="kv-v mono">${esc(status.usb || "unknown")}</span></div>
       <div class="kv"><span class="kv-k">Transfer session</span><span class="kv-v mono">${status.session_active ? "active" : "inactive"}</span></div>
       <div class="kv"><span class="kv-k">Drives mounted</span><span class="kv-v mono">${mounted} of ${Object.keys(status.drives || {}).length}</span></div>
       <div class="kv"><span class="kv-k">Uploads</span><span class="kv-v mono">${status.uploads_enabled ? "enabled" : "disabled"}</span></div>
+      <form class="settings-form" onsubmit="saveHotspotSettings(event)">
+        <h2 class="set-section-title">Hotspot Wi-Fi</h2>
+        <div class="field"><label>Network name</label><input name="ssid" value="${esc(hotspot.ssid || hotspot.default_ssid || "")}" maxlength="32" autocomplete="off"></div>
+        <div class="field"><label>New password</label><input name="password" type="password" placeholder="Leave blank to keep current password" minlength="8" maxlength="63" autocomplete="new-password"></div>
+        <div class="file-empty-s">Default name: <span class="mono">${esc(hotspot.default_ssid || "Glovebox")}</span>. WPA2 passwords must be at least 8 characters, so the serial fallback is <span class="mono">${esc(hotspot.default_password_hint || "")}</span>.</div>
+        <div class="edit-actions">
+          <button class="btn btn-solid" type="submit">Save hotspot</button>
+        </div>
+      </form>
     </div>`;
   } else if (settingsSection === "activity") {
     main.innerHTML = `<div class="card card-pad">
       <h2 class="set-section-title">Recent log</h2>
       <pre class="log-pre">${esc(status.logs || "No portal activity yet.")}</pre>
     </div>`;
+  }
+}
+
+async function saveHotspotSettings(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = new FormData(form);
+  const ssid = String(data.get("ssid") || "").trim();
+  const password = String(data.get("password") || "");
+  try {
+    const hotspot = await api("/api/hotspot", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ssid, password })
+    });
+    status.hotspot = hotspot;
+    toast("Hotspot updated");
+    renderSettings();
+  } catch (e) {
+    toast(e.message, "err");
   }
 }
 

@@ -48,7 +48,13 @@ fi
 
 if [ "$PORTAL_ENABLED" = "true" ]
 then
-  PORTAL_WIFI_PASSWORD="${PORTAL_WIFI_PASSWORD:-teslausbportal}"
+  serial="$(awk -F ': ' '/^Serial/ {print $2}' /proc/cpuinfo 2>/dev/null | tail -n 1)"
+  serial_last4="${serial: -4}"
+  if [ -z "$serial_last4" ]
+  then
+    serial_last4="0000"
+  fi
+  PORTAL_WIFI_PASSWORD="${PORTAL_WIFI_PASSWORD:-$serial_last4$serial_last4}"
   if [ "${#PORTAL_WIFI_PASSWORD}" -lt 8 ]
   then
     setup_progress "STOP: PORTAL_WIFI_PASSWORD must be at least 8 characters."
