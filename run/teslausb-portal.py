@@ -1014,7 +1014,7 @@ APP_HTML = r"""<!doctype html>
   .video-cell { min-width: 0; border: 1px solid var(--hairline-2); border-radius: 8px; overflow: hidden; background: black; }
   .video-cell-label { display: flex; justify-content: space-between; gap: 8px; padding: 7px 9px; background: var(--surface); color: var(--muted); font-size: 11px; }
   .video-player { width: 100%; aspect-ratio: 16 / 9; background: black; display: block; object-fit: contain; }
-  .video-controls { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--hairline-2); border-radius: 8px; background: var(--surface); }
+  .video-controls { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--hairline-2); border-radius: 8px; background: var(--surface); }
   .video-scrub { width: 100%; min-width: 0; accent-color: var(--text); }
   .video-time { color: var(--muted); font-size: 11px; }
   .video-hint { color: var(--muted); font-size: 11.5px; text-align: center; margin: -3px 0 0; }
@@ -1073,8 +1073,8 @@ APP_HTML = r"""<!doctype html>
     .video-shell { max-height: calc(100vh - 16px); overflow: auto; }
     .video-modebar { grid-template-columns: repeat(2, 1fr); }
     .camera-btn { min-height: 48px; }
-    .video-controls { grid-template-columns: auto 1fr; }
-    .video-time { grid-column: 1 / -1; text-align: center; }
+    .video-controls { grid-template-columns: 1fr; }
+    .video-time { text-align: center; }
   }
 
   svg { display: block; }
@@ -1231,11 +1231,10 @@ APP_HTML = r"""<!doctype html>
     <div id="videoGrid" class="video-grid"></div>
     <div id="videoModebar" class="video-modebar"></div>
     <div class="video-controls">
-      <button id="videoPlayButton" class="icon-btn" type="button" title="Play / pause" onclick="toggleVideoViewer()">${svgIcon("play", 15)}</button>
       <input id="videoScrub" class="video-scrub" type="range" min="0" max="0" step="0.1" value="0" oninput="seekVideoViewer(this.value)">
       <span id="videoTime" class="video-time mono">0:00 / 0:00</span>
     </div>
-    <div class="video-hint">Choose a camera angle below, then use the play button or scrubber.</div>
+    <div class="video-hint">Use the video controls, or choose another camera angle below.</div>
   </div>
 </div>
 <script>
@@ -1368,11 +1367,9 @@ function updateVideoViewerUI() {
   const current = lead ? lead.currentTime : 0;
   const scrub = document.getElementById("videoScrub");
   const time = document.getElementById("videoTime");
-  const btn = document.getElementById("videoPlayButton");
   scrub.max = duration ? String(duration) : "0";
   if (!videoViewer.syncing) scrub.value = String(current || 0);
   time.textContent = `${fmtTime(current)} / ${fmtTime(duration)}`;
-  btn.innerHTML = videoViewer.playing ? svgIcon("pause", 15) : svgIcon("play", 15);
 }
 
 function syncViewerToLead() {
@@ -1387,29 +1384,6 @@ function seekVideoViewer(value) {
   updateVideoViewerUI();
 }
 
-function toggleVideoViewer() {
-  const videos = viewerVideos();
-  if (!videos.length) return;
-  const video = videos[0];
-  if (videoViewer.playing) {
-    videoViewer.playing = false;
-    video.pause();
-    updateVideoViewerUI();
-    return;
-  }
-  video.muted = true;
-  video.defaultMuted = true;
-  if (video.readyState < 2) video.load();
-  video.play().then(() => {
-    videoViewer.playing = true;
-    updateVideoViewerUI();
-  }).catch(err => {
-    videoViewer.playing = false;
-    toast(`Playback blocked. Tap the video control.`, "err");
-    updateVideoViewerUI();
-  });
-}
-
 function buildVideoCell(slot, file, single = false) {
   const key = file ? cameraKey(file.name) : slot;
   const label = file ? cameraLabel(file.name) : cameraSlotLabel(slot);
@@ -1422,7 +1396,7 @@ function buildVideoCell(slot, file, single = false) {
   }
   return `<div class="video-cell video-cell-${slot} ${single ? "video-cell-single" : ""}">
     <div class="video-cell-label"><span>${esc(label)}</span><span class="mono">${esc(fileName)}</span></div>
-    <video class="video-player" data-camera="${esc(key)}" src="${inlineUrl(file.download)}" playsinline muted preload="metadata"></video>
+    <video class="video-player" data-camera="${esc(key)}" src="${inlineUrl(file.download)}" playsinline controls preload="metadata"></video>
   </div>`;
 }
 
@@ -1432,7 +1406,7 @@ function videoFilesByCamera(files) {
 
 function renderVideoModebar() {
   const bar = document.getElementById("videoModebar");
-  const files = videoViewer.files || [];
+  const files = (videoViewer.files || []).slice().sort((a, b) => cameraRank(a.name) - cameraRank(b.name) || cameraLabel(a.name).localeCompare(cameraLabel(b.name)));
   if (files.length <= 1) {
     bar.innerHTML = "";
     return;
@@ -1465,8 +1439,6 @@ function setVideoCamera(camera) {
 
 function wireViewerVideos() {
   for (const video of viewerVideos()) {
-    video.muted = true;
-    video.setAttribute("muted", "");
     video.addEventListener("loadedmetadata", updateVideoViewerUI);
     video.addEventListener("timeupdate", syncViewerToLead);
     video.addEventListener("play", () => {
@@ -1484,7 +1456,7 @@ function wireViewerVideos() {
 
 function openVideoViewer(files, title, key = "") {
   pauseAllMedia();
-  const videoFiles = Array.isArray(files) ? files : [];
+  const videoFiles = (Array.isArray(files) ? files : []).slice().sort((a, b) => cameraRank(a.name) - cameraRank(b.name) || cameraLabel(a.name).localeCompare(cameraLabel(b.name)));
   const front = videoFiles.find(file => cameraKey(file.name) === "front");
   videoViewer = { playing: false, syncing: false, files: videoFiles, title: title || "Dashcam viewer", key, activeCamera: cameraKey(front?.name || videoFiles[0]?.name) || "" };
   const modal = document.getElementById("videoModal");
