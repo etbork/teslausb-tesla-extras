@@ -1071,7 +1071,7 @@ APP_HTML = r"""<!doctype html>
     .file-tbl thead { display: none; }
     .file-tbl tr { display: grid; grid-template-columns: 58px 1fr; gap: 0 8px; padding: 12px; border-bottom: 1px solid var(--hairline); }
     .file-tbl td { padding: 0; border-bottom: 0; }
-    .file-tbl-icon { grid-row: 1 / span 3; width: auto; }
+    .file-tbl-icon { grid-row: 1 / span 3; width: auto; align-self: center; display: flex; align-items: center; }
     .file-name { overflow-wrap: anywhere; align-self: center; }
     .file-tbl-actions { min-width: 0; text-align: left; margin-top: 10px; }
     .audio-row-actions { width: 100%; justify-content: flex-start; }
