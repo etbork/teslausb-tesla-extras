@@ -1050,7 +1050,7 @@ APP_HTML = r"""<!doctype html>
   .session-float-actions { display: flex; gap: 8px; justify-content: flex-end; }
   @keyframes session-border-pulse {
     0%, 100% { border-color: var(--text); }
-    50% { border-color: color-mix(in oklch, var(--error) 72%, var(--text)); }
+    50% { border-color: var(--error); }
   }
   .splash, .extend-modal { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 22px; background: color-mix(in srgb, var(--bg) 92%, black); }
   .extend-modal { z-index: 45; }
@@ -1059,7 +1059,7 @@ APP_HTML = r"""<!doctype html>
   .splash-title, .extend-title { margin: 0; font-size: 36px; line-height: 1; letter-spacing: 0; }
   .splash-sub, .extend-sub { color: var(--muted); margin: 14px 0 22px; }
   .splash-actions, .extend-actions { display: flex; flex-wrap: wrap; gap: 10px; }
-  .session-timer { color: var(--warn); }
+  .session-timer { color: var(--error); }
   .video-modal { position: fixed; inset: 0; z-index: 35; display: grid; place-items: center; padding: 18px; background: rgba(0,0,0,.82); }
   .video-modal.hidden { display: none; }
   .video-shell { width: min(1040px, 100%); max-height: calc(100vh - 32px); display: grid; gap: 10px; }
@@ -1148,7 +1148,7 @@ APP_HTML = r"""<!doctype html>
     .video-actions { justify-content: stretch; }
     .video-actions .btn { width: 100%; }
     .camera-btn { min-height: 48px; }
-    .session-float { grid-template-columns: 1fr; bottom: calc(env(safe-area-inset-bottom, 0px) + 58px); }
+    .session-float { grid-template-columns: 1fr; bottom: calc(env(safe-area-inset-bottom, 0px) + 10px); }
     .session-float-actions { display: grid; grid-template-columns: 1fr 1fr; }
   }
 
