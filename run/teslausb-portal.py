@@ -1042,9 +1042,11 @@ APP_HTML = r"""<!doctype html>
     .topbar { padding: 14px 20px; }
     .mn { padding: 24px 20px 56px; }
     .home-tiles { grid-template-columns: repeat(2, 1fr); }
-    .home-tile { min-height: 200px; padding: 18px; }
-    .home-tile-num { font-size: 48px; }
-    .home-tile-label { font-size: 18px; }
+    .home-tile { min-height: 178px; padding: 16px; gap: 9px; }
+    .home-tile-icon { margin-bottom: 2px; }
+    .home-tile-num { font-size: 44px; }
+    .home-tile-label { font-size: 17px; margin-bottom: 4px; }
+    .home-tile-foot { padding-top: 12px; margin-top: 8px; }
     .lc-grid { grid-template-columns: 1fr; }
     .set-body { grid-template-columns: 1fr; }
     .set-nav { position: static; flex-direction: row; flex-wrap: wrap; overflow-x: auto; }
@@ -1056,6 +1058,8 @@ APP_HTML = r"""<!doctype html>
   }
   @media (max-width: 560px) {
     .home-tiles { grid-template-columns: 1fr; }
+    .home-head { margin-bottom: 22px; }
+    .home-tile { min-height: 164px; }
     .folder-tabs { grid-template-columns: repeat(2, 1fr); }
     .folder-tab:nth-child(-n+2) { border-bottom: 1px solid var(--hairline); }
     .folder-tab:nth-child(2n) { border-right: 0; }
@@ -1255,6 +1259,7 @@ APP_HTML = r"""<!doctype html>
 /* ============== icon paths ============== */
 const ICONS = {
   videocam: "M2 7h13v10H2zM15 10l6-3v10l-6-3z",
+  camera: "M4 7h3l1.5-2h7L17 7h3v12H4z M9 13a3 3 0 1 0 6 0a3 3 0 1 0-6 0",
   music: "M9 18V6l11-2v12M9 18a2 2 0 1 1-4 0 2 2 0 0 1 4 0Zm11-4a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z",
   sparkles: "M10 6L11.5 10.5L16 12L11.5 13.5L10 18L8.5 13.5L4 12L8.5 10.5z M18 4L18.5 5.5L20 6L18.5 6.5L18 8L17.5 6.5L16 6L17.5 5.5z M19 16.5L19.5 17.5L20.5 18L19.5 18.5L19 19.5L18.5 18.5L17.5 18L18.5 17.5z",
   bell: "M6 8v5l-2 3h16l-2-3V8a6 6 0 0 0-12 0z M9 19a3 3 0 0 0 6 0",
@@ -1279,7 +1284,7 @@ function svgIcon(name, size = 18, stroke = 1.5) {
 /* ============== tile / folder config ============== */
 const TILES = [
   { id: "dashcam",   drive: "cam",    icon: "videocam", label: "Dash cam",    countLabel: "files" },
-  { id: "photobooth",drive: "cam",    icon: "file",     label: "Photobooth",  countLabel: "photos" },
+  { id: "photobooth",drive: "cam",    icon: "camera",   label: "Photobooth",  countLabel: "photos" },
   { id: "music",     drive: "music",  icon: "music",    label: "Music",       countLabel: "tracks" },
   { id: "lightshow", drive: "sounds", icon: "sparkles", label: "Light shows", countLabel: "shows" },
   { id: "chime",     drive: "sounds", icon: "bell",     label: "Lock chime",  countLabel: "active" },
@@ -2183,7 +2188,6 @@ function renderSettings() {
       <div class="kv"><span class="kv-k">Transfer session</span><span class="kv-v mono">${status.session_active ? "active" : "inactive"}</span></div>
       <div class="kv"><span class="kv-k">Drives mounted</span><span class="kv-v mono">${mounted} of ${Object.keys(status.drives || {}).length}</span></div>
       <div class="kv"><span class="kv-k">Uploads</span><span class="kv-v mono">${status.uploads_enabled ? "enabled" : "disabled"}</span></div>
-      <div class="kv"><span class="kv-k">Deletes</span><span class="kv-v mono">${status.deletes_enabled ? "enabled" : "disabled"}</span></div>
     </div>`;
   } else if (settingsSection === "activity") {
     main.innerHTML = `<div class="card card-pad">
