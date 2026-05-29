@@ -225,6 +225,11 @@ def count_files_under(root, rel):
     return count_files(target) if target.exists() else 0
 
 
+def directory_size_under(root, rel):
+    target, _ = safe_join(root, rel)
+    return directory_size(target) if target.exists() else 0
+
+
 def count_light_shows(root):
     target, _ = safe_join(root, "LightShow")
     if not target.exists():
@@ -264,6 +269,14 @@ def home_counts():
         except OSError:
             counts["chime"] = 0
     return counts
+
+
+def home_folder_sizes():
+    sizes = {"photobooth": None}
+    cam_root = DRIVES["cam"]["root"]
+    if cam_root.exists():
+        sizes["photobooth"] = directory_size_under(cam_root, "TeslaCam/Photobooth")
+    return sizes
 
 
 def session_deadline():
@@ -371,6 +384,7 @@ def get_status():
     status["session_expires_at"] = int(session_deadline()) if status.get("session_active") and session_deadline() else None
     status["session_timeout_seconds"] = SESSION_TIMEOUT_SECONDS
     status["home_counts"] = home_counts()
+    status["home_folder_sizes"] = home_folder_sizes()
     status["upload_targets"] = {
         key: {
             "label": value["label"],
@@ -1026,17 +1040,17 @@ APP_HTML = r"""<!doctype html>
   .tg-on .tg-knob { left: 16px; }
 
   /* Toast */
-  .toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: var(--text); color: var(--bg); border-radius: 999px; padding: 10px 18px; font-weight: 500; z-index: 20; box-shadow: 0 12px 40px rgba(0,0,0,.28); font-size: 13px; }
+  .toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: var(--text); color: var(--bg); border-radius: 999px; padding: 10px 18px; font-weight: 500; z-index: 20; box-shadow: 0 12px 40px rgba(0,0,0,.28); font-size: 13px; white-space: nowrap; max-width: calc(100vw - 42px); overflow: hidden; text-overflow: ellipsis; }
   .toast.err { background: var(--error); color: white; }
-  .session-float { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 18px); transform: translateX(-50%); z-index: 46; width: min(560px, calc(100vw - 32px)); display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 12px 14px; border-radius: 14px; border: 1px solid color-mix(in oklch, var(--warn) 28%, var(--hairline)); background: color-mix(in srgb, var(--surface) 94%, black); box-shadow: 0 18px 60px rgba(0,0,0,.42); backdrop-filter: blur(12px); }
+  .session-float { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 12px); transform: translateX(-50%); z-index: 46; width: min(560px, calc(100vw - 32px)); display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 12px 14px; border-radius: 14px; border: 1px solid var(--text); background: color-mix(in srgb, var(--surface) 94%, black); box-shadow: 0 18px 60px rgba(0,0,0,.42); backdrop-filter: blur(12px); }
   .session-float.hidden { display: none; }
-  .session-float.urgent { border-color: color-mix(in oklch, var(--error) 46%, var(--hairline)); animation: session-pulse 2.4s ease-in-out infinite; }
+  .session-float.urgent { animation: session-border-pulse 1.8s ease-in-out infinite; }
   .session-float-title { font-size: 13px; color: var(--text); font-weight: 500; }
   .session-float-sub { font-size: 11.5px; color: var(--muted); margin-top: 2px; line-height: 1.35; }
   .session-float-actions { display: flex; gap: 8px; justify-content: flex-end; }
-  @keyframes session-pulse {
-    0%, 100% { box-shadow: 0 18px 60px rgba(0,0,0,.42), 0 0 0 0 color-mix(in oklch, var(--error) 18%, transparent); }
-    50% { box-shadow: 0 18px 60px rgba(0,0,0,.42), 0 0 0 7px color-mix(in oklch, var(--error) 8%, transparent); }
+  @keyframes session-border-pulse {
+    0%, 100% { border-color: var(--text); }
+    50% { border-color: color-mix(in oklch, var(--error) 72%, var(--text)); }
   }
   .splash, .extend-modal { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 22px; background: color-mix(in srgb, var(--bg) 92%, black); }
   .extend-modal { z-index: 45; }
@@ -1099,7 +1113,7 @@ APP_HTML = r"""<!doctype html>
     .folder-tab { padding: 12px; }
     .file-tbl, .file-tbl tbody, .file-tbl tr, .file-tbl td { display: block; width: 100%; }
     .file-tbl thead { display: none; }
-    .file-tbl tr { display: grid; grid-template-columns: 76px minmax(0, 1fr) 34px; gap: 0 18px; padding: 14px 18px; border-bottom: 1px solid var(--hairline); }
+    .file-tbl tr { display: grid; grid-template-columns: 46px minmax(0, 1fr) 34px; gap: 0 18px; padding: 14px 18px; border-bottom: 1px solid var(--hairline); }
     .file-tbl td { padding: 0; border-bottom: 0; }
     .file-tbl-icon { grid-row: 1 / span 3; width: auto; align-self: center; display: flex; align-items: center; }
     .file-name { overflow-wrap: anywhere; align-self: center; }
@@ -1126,7 +1140,7 @@ APP_HTML = r"""<!doctype html>
     .video-shell { max-height: calc(100vh - 16px); overflow: auto; }
     .video-modebar { grid-template-columns: repeat(2, 1fr); }
     .camera-btn { min-height: 48px; }
-    .session-float { grid-template-columns: 1fr; bottom: calc(env(safe-area-inset-bottom, 0px) + 76px); }
+    .session-float { grid-template-columns: 1fr; bottom: calc(env(safe-area-inset-bottom, 0px) + 58px); }
     .session-float-actions { display: grid; grid-template-columns: 1fr 1fr; }
   }
 
@@ -1324,9 +1338,9 @@ const TILES = [
 ];
 
 const DASHCAM_FOLDERS = [
-  { key: "TeslaCam/RecentClips",    label: "Recent" },
   { key: "TeslaCam/SavedClips",     label: "Saved" },
   { key: "TeslaCam/SentryClips",    label: "Sentry" },
+  { key: "TeslaCam/RecentClips",    label: "Recent" },
   { key: "TeslaCam/EncryptedClips", label: "Encrypted" },
 ];
 
@@ -1338,7 +1352,7 @@ const SETTINGS_SECTIONS = [
 /* ============== state ============== */
 let status = null;
 let currentPage = "home";
-let dashcamFolder = "TeslaCam/RecentClips";
+let dashcamFolder = "TeslaCam/SavedClips";
 let dashcamItems = [];
 let dashcamTotalEntries = 0;
 let expandedClipGroups = new Set();
@@ -1603,11 +1617,12 @@ function renderSessionFloat(show = null) {
     return;
   }
   const urgent = remaining <= URGENT_PROMPT_MS;
+  const remainingLabel = sessionLabel().replace("session ", "");
   el.className = `session-float ${urgent ? "urgent" : ""}`;
   el.innerHTML = `
     <div>
-      <div class="session-float-title">Need more time?</div>
-      <div class="session-float-sub">${urgent ? "TeslaDrive is about to switch back to the car." : "Your transfer session ends soon."}</div>
+      <div class="session-float-title">Need more time? ${esc(remainingLabel)}</div>
+      <div class="session-float-sub">${urgent ? "TeslaDrive is switching back soon." : "Your transfer session ends soon."}</div>
     </div>
     <div class="session-float-actions">
       <button class="btn btn-solid btn-sm" type="button" onclick="extendSession()">Extend 5 minutes</button>
@@ -1647,7 +1662,7 @@ async function startTimedSession() {
     const nextStatus = await api("/session/start", { method: "POST" });
     sessionDeadline = nextStatus.session_expires_at ? nextStatus.session_expires_at * 1000 : Date.now() + SESSION_MS;
     extendPromptShown = false;
-    toast("Transfer session started for 5 minutes");
+    toast("Transfer session started");
     await refresh();
     setTimeout(() => refresh().catch(() => {}), 1200);
   } catch (e) { toast(e.message, "err"); }
@@ -1712,9 +1727,12 @@ function renderHome() {
     const usage = drive?.usage;
     const meterTone = t.id === "chime" ? (drive?.mounted ? "ok" : "err") : "";
     const meterWidth = t.id === "chime" ? (drive?.mounted ? 100 : 0) : pct(usage);
-    const footRight = t.id === "chime"
+    let footRight = t.id === "chime"
       ? (drive?.mounted ? (status.home_counts?.chime ? "LockChime.wav" : "no chime") : "not mounted")
       : (usage ? `${fmtBytes(usage.used)} / ${fmtBytes(usage.total)}` : "not mounted");
+    if (t.id === "photobooth" && status.home_folder_sizes?.photobooth != null) {
+      footRight = `${fmtBytes(status.home_folder_sizes.photobooth)} used`;
+    }
     return `<button class="home-tile" type="button" onclick="showPage('${t.id}')">
       <div class="home-tile-icon">${svgIcon(t.icon, 26, 1.2)}</div>
       <div class="home-tile-num">${esc(String(count))}</div>
@@ -1750,7 +1768,7 @@ function previewCell(item, drive) {
       ? `<span class="album-wrap"><img class="album-art" src="${item.art}" alt="" loading="lazy" onerror="this.parentElement.classList.add('art-missing')"><span class="album-fallback">${svgIcon("music", 19)}</span></span>`
       : `<span class="album-fallback">${svgIcon("music", 19)}</span>`;
   }
-  if (drive === "sounds" && extOf(item.name) === "fseq") return `<span class="media-icon">${svgIcon("disco", 21, 1.35)}</span>`;
+  if (drive === "sounds" && extOf(item.name) === "fseq") return `<span class="media-icon">${svgIcon("sparkles", 21, 1.35)}</span>`;
   if (drive === "sounds" && isAudio(item)) return `<span class="media-icon">${svgIcon("music", 21, 1.35)}</span>`;
   if (item.is_dir && item.thumbnail) return `<img class="dash-thumb" src="${item.thumbnail}" alt="" loading="lazy">`;
   if (isVideo(item)) return `<button class="dash-thumb icon-btn" type="button" title="Play video" onclick="event.stopPropagation(); playVideo(${jsAttr(inlineUrl(item.download))}, ${jsAttr(item.name)})">${svgIcon("play", 17)}</button>`;
@@ -2013,7 +2031,10 @@ async function loadDashcam() {
 async function loadPhotobooth() {
   document.getElementById("photoboothBanner").innerHTML = sessionBanner("Start a transfer session to browse and download Photobooth images.");
   const drive = status.drives.cam;
-  document.getElementById("photoboothInfo").textContent = drive?.mounted ? `${status.home_counts?.photobooth ?? 0} photos` : "Photobooth not mounted";
+  const photoboothSize = status.home_folder_sizes?.photobooth;
+  document.getElementById("photoboothInfo").textContent = drive?.mounted
+    ? `${status.home_counts?.photobooth ?? 0} photos · ${photoboothSize != null ? fmtBytes(photoboothSize) : "0 B"}`
+    : "Photobooth not mounted";
   const tbody = document.getElementById("photoboothTable");
   if (!drive?.mounted) {
     tbody.innerHTML = emptyRow("Drive not mounted", "Start a transfer session to view Photobooth images.");
