@@ -1017,6 +1017,7 @@ APP_HTML = r"""<!doctype html>
   .video-controls { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--hairline-2); border-radius: 8px; background: var(--surface); }
   .video-scrub { width: 100%; min-width: 0; accent-color: var(--text); }
   .video-time { color: var(--muted); font-size: 11px; }
+  .video-hint { color: var(--muted); font-size: 11.5px; text-align: center; margin: -3px 0 0; }
 
   /* Responsive */
   @media (max-width: 900px) {
@@ -1232,6 +1233,7 @@ APP_HTML = r"""<!doctype html>
       <input id="videoScrub" class="video-scrub" type="range" min="0" max="0" step="0.1" value="0" oninput="seekVideoViewer(this.value)">
       <span id="videoTime" class="video-time mono">0:00 / 0:00</span>
     </div>
+    <div class="video-hint">If shared play is blocked, use the video’s own play control. Scrubbing still keeps the angles aligned.</div>
   </div>
 </div>
 <script>
@@ -1413,7 +1415,7 @@ function toggleVideoViewer() {
     updateVideoViewerUI();
   }).catch(err => {
     videoViewer.playing = false;
-    toast(`Could not play video: ${err?.message || "tap again"}`, "err");
+    toast(`Shared play blocked. Tap a video play control.`, "err");
     updateVideoViewerUI();
   });
 }
@@ -1430,7 +1432,7 @@ function buildVideoCell(slot, file, single = false) {
   }
   return `<div class="video-cell video-cell-${slot} ${single ? "video-cell-single" : ""}">
     <div class="video-cell-label"><span>${esc(label)}</span><span class="mono">${esc(fileName)}</span></div>
-    <video class="video-player" data-camera="${esc(key)}" src="${inlineUrl(file.download)}" playsinline muted preload="metadata"></video>
+    <video class="video-player" data-camera="${esc(key)}" src="${inlineUrl(file.download)}" playsinline muted controls preload="metadata"></video>
   </div>`;
 }
 
@@ -1458,6 +1460,14 @@ function openVideoViewer(files, title) {
     video.setAttribute("muted", "");
     video.addEventListener("loadedmetadata", updateVideoViewerUI);
     video.addEventListener("timeupdate", syncViewerToLead);
+    video.addEventListener("play", () => {
+      const lead = viewerVideos()[0];
+      if (video !== lead && lead && lead.paused) {
+        lead.currentTime = video.currentTime;
+      }
+      videoViewer.playing = true;
+      updateVideoViewerUI();
+    });
     video.addEventListener("pause", () => {
       if (viewerVideos().every(v => v.paused)) {
         videoViewer.playing = false;
