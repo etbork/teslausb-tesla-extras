@@ -118,8 +118,7 @@ def default_hotspot_ssid():
 
 def default_hotspot_password():
     serial = pi_serial()
-    last4 = serial[-4:] if len(serial) >= 4 else "0000"
-    return last4 * 2
+    return serial[-8:] if len(serial) >= 8 else "00000000"
 
 
 def read_hostapd_config():
