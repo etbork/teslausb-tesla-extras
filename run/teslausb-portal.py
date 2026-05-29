@@ -1303,6 +1303,7 @@ function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 }
 function jsStr(value) { return JSON.stringify(String(value ?? "")); }
+function jsAttr(value) { return esc(jsStr(value)); }
 function fmtBytes(n) {
   if (n == null) return "—";
   const units = ["B","KB","MB","GB","TB"];
@@ -1663,7 +1664,7 @@ function previewCell(item, drive) {
       : `<span class="album-fallback">${svgIcon("music", 17)}</span>`;
   }
   if (item.is_dir && item.thumbnail) return `<img class="dash-thumb" src="${item.thumbnail}" alt="" loading="lazy">`;
-  if (isVideo(item)) return `<button class="dash-thumb icon-btn" type="button" title="Play video" onclick="event.stopPropagation(); playVideo(${jsStr(inlineUrl(item.download))}, ${jsStr(item.name)})">${svgIcon("play", 17)}</button>`;
+  if (isVideo(item)) return `<button class="dash-thumb icon-btn" type="button" title="Play video" onclick="event.stopPropagation(); playVideo(${jsAttr(inlineUrl(item.download))}, ${jsAttr(item.name)})">${svgIcon("play", 17)}</button>`;
   if (isImage(item)) return `<img class="dash-thumb" src="${inlineUrl(item.download)}" alt="" loading="lazy">`;
   return svgIcon(item.is_dir ? "folder" : "file", 15, 1.4);
 }
@@ -1674,7 +1675,7 @@ function audioAction(item) {
 
 function fileRow(item, drive, onDelete, onOpen) {
   const playAction = isVideo(item)
-    ? `<button class="icon-btn" title="Play" onclick="event.stopPropagation(); playVideo(${jsStr(inlineUrl(item.download))}, ${jsStr(item.name)})">${svgIcon("play", 14)}</button>`
+    ? `<button class="icon-btn" title="Play" onclick="event.stopPropagation(); playVideo(${jsAttr(inlineUrl(item.download))}, ${jsAttr(item.name)})">${svgIcon("play", 14)}</button>`
     : "";
   const actions = item.is_dir
     ? ""
@@ -1685,7 +1686,7 @@ function fileRow(item, drive, onDelete, onOpen) {
   const click = item.is_dir
     ? `onclick="${onOpen || ""}"`
     : isVideo(item)
-      ? `onclick="playVideo(${jsStr(inlineUrl(item.download))}, ${jsStr(item.name)})"`
+      ? `onclick="playVideo(${jsAttr(inlineUrl(item.download))}, ${jsAttr(item.name)})"`
       : `onclick="window.location.href='${item.download}'"`;
   return `<tr ${click}>
     <td class="file-tbl-icon">${previewCell(item, drive)}</td>
@@ -1762,7 +1763,7 @@ function clipStack(files) {
   const front = files.find(file => cameraKey(file.name) === "front");
   const file = front || files[0];
   const key = clipGroupKey(file);
-  return `<span class="clip-stack"><button class="dash-thumb icon-btn" type="button" title="Open multi-camera viewer" onclick="event.stopPropagation(); openClipGroupViewer(${jsStr(key)})">${svgIcon("play", 17)}</button></span>`;
+  return `<span class="clip-stack"><button class="dash-thumb icon-btn" type="button" title="Open multi-camera viewer" onclick="event.stopPropagation(); openClipGroupViewer(${jsAttr(key)})">${svgIcon("play", 17)}</button></span>`;
 }
 
 function clipGroupRow(group) {
@@ -1774,19 +1775,19 @@ function clipGroupRow(group) {
       <span>${esc(cameraLabel(file.name))}</span>
       <span class="mono num-faint">${esc(file.size_label)}</span>
       <span class="clip-file-actions">
-        <button class="icon-btn" title="Play" onclick="event.stopPropagation(); playVideo(${jsStr(inlineUrl(file.download))}, ${jsStr(file.name)})">${svgIcon("play", 14)}</button>
+        <button class="icon-btn" title="Play" onclick="event.stopPropagation(); playVideo(${jsAttr(inlineUrl(file.download))}, ${jsAttr(file.name)})">${svgIcon("play", 14)}</button>
         <a class="icon-btn" href="${file.download}" title="Download" onclick="event.stopPropagation()">${svgIcon("download", 14)}</a>
-        ${status.deletes_enabled && status.session_active ? `<button class="icon-btn icon-btn-danger" title="Delete" onclick="event.stopPropagation(); deleteItem('cam', ${jsStr(file.path)})">${svgIcon("trash", 14)}</button>` : ""}
+        ${status.deletes_enabled && status.session_active ? `<button class="icon-btn icon-btn-danger" title="Delete" onclick="event.stopPropagation(); deleteItem('cam', ${jsAttr(file.path)})">${svgIcon("trash", 14)}</button>` : ""}
       </span>
     </div>`).join("")}
   </div></td></tr>` : "";
-  return `<tr onclick="toggleClipGroup(${jsStr(group.key)})">
+  return `<tr onclick="toggleClipGroup(${jsAttr(group.key)})">
     <td class="file-tbl-icon">${clipStack(group.files)}</td>
     <td class="file-name"><span class="clip-name"><span>${esc(formatClipTime(group.key))}</span><span class="clip-sub mono">${esc(group.key)}</span></span></td>
     <td class="mono num-faint">${esc(summary)}</td>
     <td class="file-tbl-actions">
-      <button class="icon-btn" title="Open multi-camera viewer" onclick="event.stopPropagation(); openClipGroupViewer(${jsStr(group.key)})">${svgIcon("play", 14)}</button>
-      <button class="icon-btn" title="${expanded ? "Collapse" : "Expand"}" onclick="event.stopPropagation(); toggleClipGroup(${jsStr(group.key)})">${expanded ? svgIcon("back", 14) : svgIcon("folder", 14)}</button>
+      <button class="icon-btn" title="Open multi-camera viewer" onclick="event.stopPropagation(); openClipGroupViewer(${jsAttr(group.key)})">${svgIcon("play", 14)}</button>
+      <button class="icon-btn" title="${expanded ? "Collapse" : "Expand"}" onclick="event.stopPropagation(); toggleClipGroup(${jsAttr(group.key)})">${expanded ? svgIcon("back", 14) : svgIcon("folder", 14)}</button>
     </td>
   </tr>${filesHtml}`;
 }
