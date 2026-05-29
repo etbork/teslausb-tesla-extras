@@ -1027,6 +1027,16 @@ APP_HTML = r"""<!doctype html>
   /* Toast */
   .toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: var(--text); color: var(--bg); border-radius: 999px; padding: 10px 18px; font-weight: 500; z-index: 20; box-shadow: 0 12px 40px rgba(0,0,0,.28); font-size: 13px; }
   .toast.err { background: var(--error); color: white; }
+  .session-float { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 18px); transform: translateX(-50%); z-index: 46; width: min(560px, calc(100vw - 32px)); display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 12px 14px; border-radius: 14px; border: 1px solid color-mix(in oklch, var(--warn) 28%, var(--hairline)); background: color-mix(in srgb, var(--surface) 94%, black); box-shadow: 0 18px 60px rgba(0,0,0,.42); backdrop-filter: blur(12px); }
+  .session-float.hidden { display: none; }
+  .session-float.urgent { border-color: color-mix(in oklch, var(--error) 46%, var(--hairline)); animation: session-pulse 2.4s ease-in-out infinite; }
+  .session-float-title { font-size: 13px; color: var(--text); font-weight: 500; }
+  .session-float-sub { font-size: 11.5px; color: var(--muted); margin-top: 2px; line-height: 1.35; }
+  .session-float-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  @keyframes session-pulse {
+    0%, 100% { box-shadow: 0 18px 60px rgba(0,0,0,.42), 0 0 0 0 color-mix(in oklch, var(--error) 18%, transparent); }
+    50% { box-shadow: 0 18px 60px rgba(0,0,0,.42), 0 0 0 7px color-mix(in oklch, var(--error) 8%, transparent); }
+  }
   .splash, .extend-modal { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 22px; background: color-mix(in srgb, var(--bg) 92%, black); }
   .extend-modal { z-index: 45; }
   .splash.hidden, .extend-modal.hidden { display: none; }
@@ -1043,11 +1053,6 @@ APP_HTML = r"""<!doctype html>
   .video-modebar { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 8px; align-items: stretch; }
   .camera-btn { min-height: 44px; justify-content: center; font-size: 13px; }
   .camera-btn.on { background: var(--text); color: var(--bg); border-color: var(--text); }
-  .video-extend { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 12px 14px; border: 1px solid color-mix(in oklch, var(--warn) 28%, var(--hairline)); border-radius: 10px; background: color-mix(in oklch, var(--warn) 8%, var(--surface)); }
-  .video-extend.hidden { display: none; }
-  .video-extend-title { font-size: 13px; color: var(--text); font-weight: 500; }
-  .video-extend-sub { font-size: 11.5px; color: var(--muted); margin-top: 2px; line-height: 1.4; }
-  .video-extend-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
   .video-grid { display: grid; grid-template-columns: 1fr; gap: 8px; align-items: center; }
   .video-cell { min-width: 0; border: 1px solid var(--hairline-2); border-radius: 8px; overflow: hidden; background: black; }
   .video-cell-label { display: flex; justify-content: space-between; gap: 8px; padding: 7px 9px; background: var(--surface); color: var(--muted); font-size: 11px; }
@@ -1093,11 +1098,12 @@ APP_HTML = r"""<!doctype html>
     .folder-tab { padding: 12px; }
     .file-tbl, .file-tbl tbody, .file-tbl tr, .file-tbl td { display: block; width: 100%; }
     .file-tbl thead { display: none; }
-    .file-tbl tr { display: grid; grid-template-columns: 58px 1fr; gap: 0 8px; padding: 12px; border-bottom: 1px solid var(--hairline); }
+    .file-tbl tr { display: grid; grid-template-columns: 72px 1fr; gap: 0 18px; padding: 14px 18px; border-bottom: 1px solid var(--hairline); }
     .file-tbl td { padding: 0; border-bottom: 0; }
     .file-tbl-icon { grid-row: 1 / span 3; width: auto; align-self: center; display: flex; align-items: center; }
     .file-name { overflow-wrap: anywhere; align-self: center; }
     .file-tbl-actions { min-width: 0; text-align: left; margin-top: 10px; grid-column: 2; }
+    .clip-row .file-tbl-actions { display: none; }
     .clip-size-cell { display: none !important; }
     .audio-row-actions { width: 100%; justify-content: flex-start; }
     .audio-preview { width: min(245px, 68vw); }
@@ -1119,8 +1125,8 @@ APP_HTML = r"""<!doctype html>
     .video-shell { max-height: calc(100vh - 16px); overflow: auto; }
     .video-modebar { grid-template-columns: repeat(2, 1fr); }
     .camera-btn { min-height: 48px; }
-    .video-extend { grid-template-columns: 1fr; }
-    .video-extend-actions { justify-content: stretch; display: grid; grid-template-columns: 1fr 1fr; }
+    .session-float { grid-template-columns: 1fr; bottom: calc(env(safe-area-inset-bottom, 0px) + 76px); }
+    .session-float-actions { display: grid; grid-template-columns: 1fr 1fr; }
   }
 
   svg { display: block; }
@@ -1248,6 +1254,7 @@ APP_HTML = r"""<!doctype html>
 </div>
 
 <div id="toast" class="toast hidden"></div>
+<div id="sessionFloat" class="session-float hidden"></div>
 <div id="splash" class="splash">
   <div class="splash-card">
     <h2 class="splash-title">Connect to TeslaDrive</h2>
@@ -1276,7 +1283,6 @@ APP_HTML = r"""<!doctype html>
     </div>
     <div id="videoGrid" class="video-grid"></div>
     <div id="videoModebar" class="video-modebar"></div>
-    <div id="videoExtendPrompt" class="video-extend hidden"></div>
     <div class="video-hint">${svgIcon("warn", 15, 1.7)}<span>Dashcam videos are large. The first play can take a moment on phones, especially outside hotspot mode.</span></div>
   </div>
 </div>
@@ -1344,7 +1350,8 @@ let dashcamPage = 1;
 let videoViewer = { playing: false, syncing: false, files: [], title: "", key: "", activeCamera: "" };
 const DASHCAM_PAGE_SIZE = 8;
 const SESSION_MS = 5 * 60 * 1000;
-const EXTEND_PROMPT_MS = 2 * 60 * 1000;
+const EXTEND_PROMPT_MS = 60 * 1000;
+const URGENT_PROMPT_MS = 30 * 1000;
 
 /* ============== utilities ============== */
 function esc(value) {
@@ -1402,34 +1409,6 @@ function viewerVideos() {
 
 function updateVideoViewerUI() {
   renderVideoModebar();
-  renderVideoExtendPrompt();
-}
-
-function videoViewerOpen() {
-  return !document.getElementById("videoModal").classList.contains("hidden");
-}
-
-function renderVideoExtendPrompt(show = null) {
-  const prompt = document.getElementById("videoExtendPrompt");
-  if (!prompt) return;
-  if (show == null) {
-    show = videoViewerOpen() && status?.session_active && extendPromptShown && sessionDeadline && (sessionDeadline - Date.now()) <= EXTEND_PROMPT_MS;
-  }
-  if (!show) {
-    prompt.classList.add("hidden");
-    prompt.innerHTML = "";
-    return;
-  }
-  prompt.innerHTML = `
-    <div>
-      <div class="video-extend-title">Need more time?</div>
-      <div class="video-extend-sub">Your transfer session ends soon. Extend it without stopping playback.</div>
-    </div>
-    <div class="video-extend-actions">
-      <button class="btn btn-solid btn-sm" type="button" onclick="extendSession()">Extend 5 minutes</button>
-      <button class="btn btn-danger btn-sm" type="button" onclick="endSessionNow()">End session now</button>
-    </div>`;
-  prompt.classList.remove("hidden");
 }
 
 function buildVideoCell(slot, file, single = false) {
@@ -1531,7 +1510,6 @@ function closeVideo() {
   }
   document.getElementById("videoGrid").innerHTML = "";
   document.getElementById("videoModebar").innerHTML = "";
-  renderVideoExtendPrompt(false);
   videoViewer = { playing: false, syncing: false, files: [], title: "", key: "", activeCamera: "" };
   modal.classList.add("hidden");
 }
@@ -1560,6 +1538,12 @@ async function refreshStatusOnly() {
     status = await api("/api/status");
     renderTopbarStatus();
     reconcileSessionTimer();
+    if (currentPage === "music" && status.drives?.music?.mounted && !musicItems.length && (status.home_counts?.music || 0) > 0) {
+      await loadFolder("music", "music", "Music", "musicTable", "musicInfo", v => musicItems = v);
+    }
+    if (currentPage === "lightshow" && status.drives?.sounds?.mounted && !lightshowItems.length && (status.home_counts?.lightshow || 0) > 0) {
+      await loadFolder("lightshow", "sounds", "LightShow", "lightshowTable", "lightshowInfo", v => lightshowItems = v);
+    }
     if (currentPage === "home") renderHome();
     if (currentPage === "settings") renderSettings();
   } catch (e) {
@@ -1605,6 +1589,30 @@ function showSplashIfNeeded() {
   if (!status?.session_active) splash.classList.remove("hidden");
 }
 
+function renderSessionFloat(show = null) {
+  const el = document.getElementById("sessionFloat");
+  if (!el) return;
+  const remaining = sessionDeadline ? sessionDeadline - Date.now() : 0;
+  if (show == null) show = status?.session_active && extendPromptShown && remaining <= EXTEND_PROMPT_MS;
+  if (!show) {
+    el.classList.add("hidden");
+    el.classList.remove("urgent");
+    el.innerHTML = "";
+    return;
+  }
+  const urgent = remaining <= URGENT_PROMPT_MS;
+  el.className = `session-float ${urgent ? "urgent" : ""}`;
+  el.innerHTML = `
+    <div>
+      <div class="session-float-title">Need more time?</div>
+      <div class="session-float-sub">${urgent ? "TeslaDrive is about to switch back to the car." : "Your transfer session ends soon."}</div>
+    </div>
+    <div class="session-float-actions">
+      <button class="btn btn-solid btn-sm" type="button" onclick="extendSession()">Extend 5 minutes</button>
+      <button class="btn btn-danger btn-sm" type="button" onclick="endSessionNow()">End session now</button>
+    </div>`;
+}
+
 function sessionLabel() {
   if (!sessionDeadline) return "transfer session";
   const remaining = Math.max(0, sessionDeadline - Date.now());
@@ -1626,7 +1634,7 @@ function reconcileSessionTimer() {
     sessionDeadline = 0;
     extendPromptShown = false;
     document.getElementById("extendModal").classList.add("hidden");
-    renderVideoExtendPrompt(false);
+    renderSessionFloat(false);
     showSplashIfNeeded();
   }
 }
@@ -1639,6 +1647,7 @@ async function startTimedSession() {
     extendPromptShown = false;
     toast("Transfer session started for 5 minutes");
     await refresh();
+    setTimeout(() => refresh().catch(() => {}), 1200);
   } catch (e) { toast(e.message, "err"); }
 }
 
@@ -1649,7 +1658,7 @@ async function endSessionNow() {
     sessionDeadline = 0;
     extendPromptShown = false;
     document.getElementById("extendModal").classList.add("hidden");
-    renderVideoExtendPrompt(false);
+    renderSessionFloat(false);
     toast("Transfer session ended");
     await refresh();
   } catch (e) { toast(e.message, "err"); }
@@ -1662,7 +1671,7 @@ async function extendSession() {
     sessionDeadline = nextStatus.session_expires_at ? nextStatus.session_expires_at * 1000 : Date.now() + SESSION_MS;
     extendPromptShown = false;
     document.getElementById("extendModal").classList.add("hidden");
-    renderVideoExtendPrompt(false);
+    renderSessionFloat(false);
     toast("Session extended 5 minutes");
     await refresh();
   } catch (e) { toast(e.message, "err"); }
@@ -1672,6 +1681,7 @@ function timerTick() {
   if (!status?.session_active || !sessionDeadline) return;
   const remaining = sessionDeadline - Date.now();
   renderTopbarStatus();
+  renderSessionFloat();
   if (remaining <= 0) {
     endSessionNow();
     return;
@@ -1679,13 +1689,8 @@ function timerTick() {
   if (remaining <= EXTEND_PROMPT_MS && !extendPromptShown) {
     extendPromptShown = true;
     hideSplash();
-    if (videoViewerOpen()) {
-      document.getElementById("extendModal").classList.add("hidden");
-      renderVideoExtendPrompt(true);
-    } else {
-      renderVideoExtendPrompt(false);
-      document.getElementById("extendModal").classList.remove("hidden");
-    }
+    document.getElementById("extendModal").classList.add("hidden");
+    renderSessionFloat(true);
   }
 }
 
@@ -1848,8 +1853,7 @@ function groupDashcamItems(items) {
 function clipStack(files) {
   const front = files.find(file => cameraKey(file.name) === "front");
   const file = front || files[0];
-  const key = clipGroupKey(file);
-  return `<span class="clip-stack"><button class="dash-thumb icon-btn" type="button" title="Open viewer" onclick="event.stopPropagation(); openClipGroupViewer(${jsAttr(key)})"><video class="dash-thumb" src="${inlineUrl(file.download)}#t=0.1" muted preload="metadata" playsinline></video></button></span>`;
+  return `<span class="clip-stack"><video class="dash-thumb" src="${inlineUrl(file.download)}#t=0.1" muted preload="metadata" playsinline></video></span>`;
 }
 
 function clipGroupRow(group) {
@@ -1867,14 +1871,11 @@ function clipGroupRow(group) {
       </span>
     </div>`).join("")}
   </div></td></tr>` : "";
-  return `<tr onclick="openClipGroupViewer(${jsAttr(group.key)})">
+  return `<tr class="clip-row" onclick="openClipGroupViewer(${jsAttr(group.key)})">
     <td class="file-tbl-icon">${clipStack(group.files)}</td>
     <td class="file-name"><span class="clip-summary"><span class="clip-title">${esc(formatClipTime(group.key))}</span><span class="clip-sub mono">${esc(group.key)}</span><span class="clip-sub mono">${esc(summary)}</span></span></td>
     <td class="mono num-faint clip-size-cell">${esc(summary)}</td>
-    <td class="file-tbl-actions">
-      <button class="icon-btn" title="Open viewer" onclick="event.stopPropagation(); openClipGroupViewer(${jsAttr(group.key)})">${svgIcon("play", 14)}</button>
-      <button class="icon-btn" title="${expanded ? "Collapse" : "Expand"}" onclick="event.stopPropagation(); toggleClipGroup(${jsAttr(group.key)})">${expanded ? svgIcon("back", 14) : svgIcon("folder", 14)}</button>
-    </td>
+    <td class="file-tbl-actions"></td>
   </tr>${filesHtml}`;
 }
 
