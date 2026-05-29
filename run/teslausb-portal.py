@@ -970,9 +970,9 @@ APP_HTML = r"""<!doctype html>
   .clip-pager-info { color: var(--muted); font-size: 12px; text-align: center; order: 2; }
   .clip-pager-actions { display: flex; gap: 8px; align-items: center; justify-content: center; order: 1; }
   .next-arrow svg { transform: rotate(180deg); }
-  .album-wrap { width: 38px; height: 38px; display: block; position: relative; overflow: hidden; border-radius: 6px; }
-  .album-art { width: 38px; height: 38px; object-fit: cover; border-radius: 6px; background: var(--bg); border: 1px solid var(--hairline); display: block; }
-  .album-fallback { width: 38px; height: 38px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--hairline); display: grid; place-items: center; color: var(--muted); }
+  .album-wrap { width: 46px; height: 46px; display: block; position: relative; overflow: hidden; border-radius: 7px; }
+  .album-art { width: 46px; height: 46px; object-fit: cover; border-radius: 7px; background: var(--bg); border: 1px solid var(--hairline); display: block; }
+  .album-fallback, .media-icon { width: 46px; height: 46px; border-radius: 7px; background: var(--surface-2); border: 1px solid var(--hairline); display: grid; place-items: center; color: var(--muted); }
   .album-wrap .album-fallback { display: none; position: absolute; inset: 0; }
   .album-wrap.art-missing .album-art { display: none; }
   .album-wrap.art-missing .album-fallback { display: grid; }
@@ -1099,14 +1099,14 @@ APP_HTML = r"""<!doctype html>
     .folder-tab { padding: 12px; }
     .file-tbl, .file-tbl tbody, .file-tbl tr, .file-tbl td { display: block; width: 100%; }
     .file-tbl thead { display: none; }
-    .file-tbl tr { display: grid; grid-template-columns: 72px 1fr; gap: 0 18px; padding: 14px 18px; border-bottom: 1px solid var(--hairline); }
+    .file-tbl tr { display: grid; grid-template-columns: 76px minmax(0, 1fr) 34px; gap: 0 18px; padding: 14px 18px; border-bottom: 1px solid var(--hairline); }
     .file-tbl td { padding: 0; border-bottom: 0; }
     .file-tbl-icon { grid-row: 1 / span 3; width: auto; align-self: center; display: flex; align-items: center; }
     .file-name { overflow-wrap: anywhere; align-self: center; }
-    .file-tbl-actions { min-width: 0; text-align: left; margin-top: 10px; grid-column: 2; }
+    .file-tbl-actions { min-width: 0; text-align: right; margin-top: 10px; grid-column: 2 / 4; }
     .clip-row .file-tbl-actions { display: none; }
     .clip-size-cell { display: none !important; }
-    .audio-row-actions { width: 100%; justify-content: flex-start; }
+    .audio-row-actions { width: 100%; justify-content: flex-end; }
     .audio-preview { width: min(245px, 68vw); }
     .clip-summary { gap: 4px; }
     .clip-title { font-size: 15px; }
@@ -1293,6 +1293,7 @@ const ICONS = {
   videocam: "M2 7h13v10H2zM15 10l6-3v10l-6-3z",
   camera: "M4 7h3l1.5-2h7L17 7h3v12H4z M9 13a3 3 0 1 0 6 0a3 3 0 1 0-6 0",
   music: "M9 18V6l11-2v12M9 18a2 2 0 1 1-4 0 2 2 0 0 1 4 0Zm11-4a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z",
+  disco: "M12 3a7 7 0 0 1 7 7c0 5-7 11-7 11S5 15 5 10a7 7 0 0 1 7-7z M8 9h8M7 12h10M9 15h6M12 3v18",
   sparkles: "M10 6L11.5 10.5L16 12L11.5 13.5L10 18L8.5 13.5L4 12L8.5 10.5z M18 4L18.5 5.5L20 6L18.5 6.5L18 8L17.5 6.5L16 6L17.5 5.5z M19 16.5L19.5 17.5L20.5 18L19.5 18.5L19 19.5L18.5 18.5L17.5 18L18.5 17.5z",
   bell: "M6 8v5l-2 3h16l-2-3V8a6 6 0 0 0-12 0z M9 19a3 3 0 0 0 6 0",
   upload: "M12 16V4M6 10l6-6 6 6M4 20h16",
@@ -1746,9 +1747,11 @@ function sessionBanner(message) {
 function previewCell(item, drive) {
   if (drive === "music" && isAudio(item)) {
     return item.art
-      ? `<span class="album-wrap"><img class="album-art" src="${item.art}" alt="" loading="lazy" onerror="this.parentElement.classList.add('art-missing')"><span class="album-fallback">${svgIcon("music", 17)}</span></span>`
-      : `<span class="album-fallback">${svgIcon("music", 17)}</span>`;
+      ? `<span class="album-wrap"><img class="album-art" src="${item.art}" alt="" loading="lazy" onerror="this.parentElement.classList.add('art-missing')"><span class="album-fallback">${svgIcon("music", 19)}</span></span>`
+      : `<span class="album-fallback">${svgIcon("music", 19)}</span>`;
   }
+  if (drive === "sounds" && extOf(item.name) === "fseq") return `<span class="media-icon">${svgIcon("disco", 21, 1.35)}</span>`;
+  if (drive === "sounds" && isAudio(item)) return `<span class="media-icon">${svgIcon("music", 21, 1.35)}</span>`;
   if (item.is_dir && item.thumbnail) return `<img class="dash-thumb" src="${item.thumbnail}" alt="" loading="lazy">`;
   if (isVideo(item)) return `<button class="dash-thumb icon-btn" type="button" title="Play video" onclick="event.stopPropagation(); playVideo(${jsAttr(inlineUrl(item.download))}, ${jsAttr(item.name)})">${svgIcon("play", 17)}</button>`;
   if (isImage(item)) return `<img class="dash-thumb" src="${inlineUrl(item.download)}" alt="" loading="lazy">`;
