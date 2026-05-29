@@ -1043,6 +1043,11 @@ APP_HTML = r"""<!doctype html>
   .video-modebar { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 8px; align-items: stretch; }
   .camera-btn { min-height: 44px; justify-content: center; font-size: 13px; }
   .camera-btn.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .video-extend { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 12px 14px; border: 1px solid color-mix(in oklch, var(--warn) 28%, var(--hairline)); border-radius: 10px; background: color-mix(in oklch, var(--warn) 8%, var(--surface)); }
+  .video-extend.hidden { display: none; }
+  .video-extend-title { font-size: 13px; color: var(--text); font-weight: 500; }
+  .video-extend-sub { font-size: 11.5px; color: var(--muted); margin-top: 2px; line-height: 1.4; }
+  .video-extend-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
   .video-grid { display: grid; grid-template-columns: 1fr; gap: 8px; align-items: center; }
   .video-cell { min-width: 0; border: 1px solid var(--hairline-2); border-radius: 8px; overflow: hidden; background: black; }
   .video-cell-label { display: flex; justify-content: space-between; gap: 8px; padding: 7px 9px; background: var(--surface); color: var(--muted); font-size: 11px; }
@@ -1114,6 +1119,8 @@ APP_HTML = r"""<!doctype html>
     .video-shell { max-height: calc(100vh - 16px); overflow: auto; }
     .video-modebar { grid-template-columns: repeat(2, 1fr); }
     .camera-btn { min-height: 48px; }
+    .video-extend { grid-template-columns: 1fr; }
+    .video-extend-actions { justify-content: stretch; display: grid; grid-template-columns: 1fr 1fr; }
   }
 
   svg { display: block; }
@@ -1269,6 +1276,7 @@ APP_HTML = r"""<!doctype html>
     </div>
     <div id="videoGrid" class="video-grid"></div>
     <div id="videoModebar" class="video-modebar"></div>
+    <div id="videoExtendPrompt" class="video-extend hidden"></div>
     <div class="video-hint">${svgIcon("warn", 15, 1.7)}<span>Dashcam videos are large. The first play can take a moment on phones, especially outside hotspot mode.</span></div>
   </div>
 </div>
@@ -1394,6 +1402,34 @@ function viewerVideos() {
 
 function updateVideoViewerUI() {
   renderVideoModebar();
+  renderVideoExtendPrompt();
+}
+
+function videoViewerOpen() {
+  return !document.getElementById("videoModal").classList.contains("hidden");
+}
+
+function renderVideoExtendPrompt(show = null) {
+  const prompt = document.getElementById("videoExtendPrompt");
+  if (!prompt) return;
+  if (show == null) {
+    show = videoViewerOpen() && status?.session_active && extendPromptShown && sessionDeadline && (sessionDeadline - Date.now()) <= EXTEND_PROMPT_MS;
+  }
+  if (!show) {
+    prompt.classList.add("hidden");
+    prompt.innerHTML = "";
+    return;
+  }
+  prompt.innerHTML = `
+    <div>
+      <div class="video-extend-title">Need more time?</div>
+      <div class="video-extend-sub">Your transfer session ends soon. Extend it without stopping playback.</div>
+    </div>
+    <div class="video-extend-actions">
+      <button class="btn btn-solid btn-sm" type="button" onclick="extendSession()">Extend 5 minutes</button>
+      <button class="btn btn-danger btn-sm" type="button" onclick="endSessionNow()">End session now</button>
+    </div>`;
+  prompt.classList.remove("hidden");
 }
 
 function buildVideoCell(slot, file, single = false) {
@@ -1495,6 +1531,7 @@ function closeVideo() {
   }
   document.getElementById("videoGrid").innerHTML = "";
   document.getElementById("videoModebar").innerHTML = "";
+  renderVideoExtendPrompt(false);
   videoViewer = { playing: false, syncing: false, files: [], title: "", key: "", activeCamera: "" };
   modal.classList.add("hidden");
 }
@@ -1589,6 +1626,7 @@ function reconcileSessionTimer() {
     sessionDeadline = 0;
     extendPromptShown = false;
     document.getElementById("extendModal").classList.add("hidden");
+    renderVideoExtendPrompt(false);
     showSplashIfNeeded();
   }
 }
@@ -1611,6 +1649,7 @@ async function endSessionNow() {
     sessionDeadline = 0;
     extendPromptShown = false;
     document.getElementById("extendModal").classList.add("hidden");
+    renderVideoExtendPrompt(false);
     toast("Transfer session ended");
     await refresh();
   } catch (e) { toast(e.message, "err"); }
@@ -1623,6 +1662,7 @@ async function extendSession() {
     sessionDeadline = nextStatus.session_expires_at ? nextStatus.session_expires_at * 1000 : Date.now() + SESSION_MS;
     extendPromptShown = false;
     document.getElementById("extendModal").classList.add("hidden");
+    renderVideoExtendPrompt(false);
     toast("Session extended 5 minutes");
     await refresh();
   } catch (e) { toast(e.message, "err"); }
@@ -1639,7 +1679,13 @@ function timerTick() {
   if (remaining <= EXTEND_PROMPT_MS && !extendPromptShown) {
     extendPromptShown = true;
     hideSplash();
-    document.getElementById("extendModal").classList.remove("hidden");
+    if (videoViewerOpen()) {
+      document.getElementById("extendModal").classList.add("hidden");
+      renderVideoExtendPrompt(true);
+    } else {
+      renderVideoExtendPrompt(false);
+      document.getElementById("extendModal").classList.remove("hidden");
+    }
   }
 }
 
