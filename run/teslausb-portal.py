@@ -384,7 +384,7 @@ def get_status():
     return status
 
 
-def list_directory(drive_key, rel):
+def list_directory(drive_key, rel, limit=None, offset=0):
     if drive_key not in DRIVES:
         raise ValueError("Unknown drive.")
     root = DRIVES[drive_key]["root"]
@@ -394,10 +394,16 @@ def list_directory(drive_key, rel):
         rel = ""
     if not target.is_dir():
         raise ValueError("Browse path is not a directory.")
+    children = [
+        child for child in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+        if not (child.is_file() and is_hidden_event_support_file(drive_key, rel, child.name))
+    ]
+    total = len(children)
+    offset = max(0, int(offset or 0))
+    if limit:
+        children = children[offset:offset + max(1, int(limit))]
     items = []
-    for child in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
-        if child.is_file() and is_hidden_event_support_file(drive_key, rel, child.name):
-            continue
+    for child in children:
         try:
             stat = child.stat()
         except OSError:
@@ -418,7 +424,7 @@ def list_directory(drive_key, rel):
             "art": "" if is_dir or child.suffix.lower() not in {".mp3", ".flac", ".m4a", ".aac", ".mp4"} else f"/art?drive={quote(drive_key)}&path={quote(child_rel)}",
         })
     parent = posixpath.dirname(rel) if rel else ""
-    return {"drive": drive_key, "path": rel, "parent": parent, "items": items}
+    return {"drive": drive_key, "path": rel, "parent": parent, "items": items, "total": total, "offset": offset, "limit": limit}
 
 
 def synchsafe_to_int(data):
@@ -606,7 +612,9 @@ class PortalHandler(BaseHTTPRequestHandler):
                 self.send_json(get_status())
             elif parsed.path == "/api/list":
                 query = parse_qs(parsed.query)
-                self.send_json(list_directory(query.get("drive", ["cam"])[0], query.get("path", [""])[0]))
+                limit = query.get("limit", [None])[0]
+                offset = query.get("offset", [0])[0]
+                self.send_json(list_directory(query.get("drive", ["cam"])[0], query.get("path", [""])[0], int(limit) if limit else None, int(offset or 0)))
             elif parsed.path == "/download":
                 self.download(parsed)
             elif parsed.path == "/art":
@@ -950,14 +958,17 @@ APP_HTML = r"""<!doctype html>
   .dash-thumb-tile svg { color: var(--text); }
   .clip-name { display: flex; flex-direction: column; gap: 4px; }
   .clip-sub { color: var(--faint); font-size: 11.5px; }
+  .clip-summary { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  .clip-title { font-size: 16px; line-height: 1.25; }
   .clip-expanded { background: color-mix(in oklch, var(--surface) 70%, var(--bg)); }
   .clip-expanded td { padding: 0 14px 14px; }
   .clip-files { display: grid; gap: 8px; padding: 10px 0 0 102px; }
   .clip-file { display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; padding: 8px 10px; border: 1px solid var(--hairline); border-radius: 7px; background: var(--bg); }
   .clip-file-actions { display: flex; gap: 4px; align-items: center; }
-  .clip-pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px; }
-  .clip-pager-info { color: var(--muted); font-size: 12px; }
-  .clip-pager-actions { display: flex; gap: 8px; align-items: center; }
+  .clip-pager { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 16px; }
+  .clip-pager-info { color: var(--muted); font-size: 12px; text-align: center; order: 2; }
+  .clip-pager-actions { display: flex; gap: 8px; align-items: center; justify-content: center; order: 1; }
+  .next-arrow svg { transform: rotate(180deg); }
   .album-wrap { width: 38px; height: 38px; display: block; position: relative; overflow: hidden; border-radius: 6px; }
   .album-art { width: 38px; height: 38px; object-fit: cover; border-radius: 6px; background: var(--bg); border: 1px solid var(--hairline); display: block; }
   .album-fallback { width: 38px; height: 38px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--hairline); display: grid; place-items: center; color: var(--muted); }
@@ -1017,6 +1028,7 @@ APP_HTML = r"""<!doctype html>
   .toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: var(--text); color: var(--bg); border-radius: 999px; padding: 10px 18px; font-weight: 500; z-index: 20; box-shadow: 0 12px 40px rgba(0,0,0,.28); font-size: 13px; }
   .toast.err { background: var(--error); color: white; }
   .splash, .extend-modal { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 22px; background: color-mix(in srgb, var(--bg) 92%, black); }
+  .extend-modal { z-index: 45; }
   .splash.hidden, .extend-modal.hidden { display: none; }
   .splash-card, .extend-card { width: min(560px, 100%); background: var(--surface); border: 1px solid var(--hairline-2); border-radius: var(--radius); padding: 28px; box-shadow: 0 24px 80px rgba(0,0,0,.3); }
   .splash-title, .extend-title { margin: 0; font-size: 36px; line-height: 1; letter-spacing: 0; }
@@ -1035,7 +1047,8 @@ APP_HTML = r"""<!doctype html>
   .video-cell { min-width: 0; border: 1px solid var(--hairline-2); border-radius: 8px; overflow: hidden; background: black; }
   .video-cell-label { display: flex; justify-content: space-between; gap: 8px; padding: 7px 9px; background: var(--surface); color: var(--muted); font-size: 11px; }
   .video-player { width: 100%; aspect-ratio: 16 / 9; background: black; display: block; object-fit: contain; }
-  .video-hint { color: var(--muted); font-size: 11.5px; text-align: center; margin: -3px 0 0; }
+  .video-hint { display: flex; gap: 10px; align-items: flex-start; color: var(--muted); font-size: 12px; line-height: 1.45; padding: 12px 14px; border: 1px solid color-mix(in oklch, var(--warn) 22%, var(--hairline)); border-radius: 10px; background: color-mix(in oklch, var(--warn) 7%, var(--surface)); }
+  .video-hint svg { flex: 0 0 auto; color: var(--warn); margin-top: 1px; }
 
   /* Responsive */
   @media (max-width: 900px) {
@@ -1079,16 +1092,20 @@ APP_HTML = r"""<!doctype html>
     .file-tbl td { padding: 0; border-bottom: 0; }
     .file-tbl-icon { grid-row: 1 / span 3; width: auto; align-self: center; display: flex; align-items: center; }
     .file-name { overflow-wrap: anywhere; align-self: center; }
-    .file-tbl-actions { min-width: 0; text-align: left; margin-top: 10px; }
+    .file-tbl-actions { min-width: 0; text-align: left; margin-top: 10px; grid-column: 2; }
+    .clip-size-cell { display: none !important; }
     .audio-row-actions { width: 100%; justify-content: flex-start; }
     .audio-preview { width: min(245px, 68vw); }
+    .clip-summary { gap: 4px; }
+    .clip-title { font-size: 15px; }
+    .clip-sub { font-size: 12px; overflow-wrap: anywhere; }
     .clip-expanded, .clip-pager-row { display: block !important; padding: 0; }
     .clip-expanded td { padding: 0 12px 12px; }
     .clip-pager-row td { padding: 0; }
     .clip-files { padding: 8px 0 0; }
     .clip-file { grid-template-columns: 1fr auto; }
     .clip-file-actions { grid-column: 1 / -1; justify-content: flex-start; }
-    .clip-pager { align-items: stretch; flex-direction: column; }
+    .clip-pager { align-items: center; flex-direction: column; }
     .clip-pager-actions { display: grid; grid-template-columns: 1fr 1fr; }
     .clip-pager-actions .btn { justify-content: center; }
     .splash-title, .extend-title { font-size: 30px; }
@@ -1252,7 +1269,7 @@ APP_HTML = r"""<!doctype html>
     </div>
     <div id="videoGrid" class="video-grid"></div>
     <div id="videoModebar" class="video-modebar"></div>
-    <div class="video-hint">Use the video controls, or choose another camera angle below.</div>
+    <div class="video-hint">${svgIcon("warn", 15, 1.7)}<span>Dashcam videos are large. The first play can take a moment on phones, especially outside hotspot mode.</span></div>
   </div>
 </div>
 <script>
@@ -1307,6 +1324,7 @@ let status = null;
 let currentPage = "home";
 let dashcamFolder = "TeslaCam/RecentClips";
 let dashcamItems = [];
+let dashcamTotalEntries = 0;
 let expandedClipGroups = new Set();
 let musicItems = [];
 let lightshowItems = [];
@@ -1316,7 +1334,7 @@ let sessionDeadline = 0;
 let extendPromptShown = false;
 let dashcamPage = 1;
 let videoViewer = { playing: false, syncing: false, files: [], title: "", key: "", activeCamera: "" };
-const DASHCAM_PAGE_SIZE = 10;
+const DASHCAM_PAGE_SIZE = 8;
 const SESSION_MS = 5 * 60 * 1000;
 const EXTEND_PROMPT_MS = 2 * 60 * 1000;
 
@@ -1587,6 +1605,7 @@ async function startTimedSession() {
 }
 
 async function endSessionNow() {
+  hideSplash();
   try {
     await api("/session/stop", { method: "POST" });
     sessionDeadline = 0;
@@ -1598,6 +1617,7 @@ async function endSessionNow() {
 }
 
 async function extendSession() {
+  hideSplash();
   try {
     const nextStatus = await api("/session/extend", { method: "POST" });
     sessionDeadline = nextStatus.session_expires_at ? nextStatus.session_expires_at * 1000 : Date.now() + SESSION_MS;
@@ -1618,6 +1638,7 @@ function timerTick() {
   }
   if (remaining <= EXTEND_PROMPT_MS && !extendPromptShown) {
     extendPromptShown = true;
+    hideSplash();
     document.getElementById("extendModal").classList.remove("hidden");
   }
 }
@@ -1802,8 +1823,8 @@ function clipGroupRow(group) {
   </div></td></tr>` : "";
   return `<tr onclick="openClipGroupViewer(${jsAttr(group.key)})">
     <td class="file-tbl-icon">${clipStack(group.files)}</td>
-    <td class="file-name"><span class="clip-name"><span>${esc(formatClipTime(group.key))}</span><span class="clip-sub mono">${esc(group.key)}</span></span></td>
-    <td class="mono num-faint">${esc(summary)}</td>
+    <td class="file-name"><span class="clip-summary"><span class="clip-title">${esc(formatClipTime(group.key))}</span><span class="clip-sub mono">${esc(group.key)}</span><span class="clip-sub mono">${esc(summary)}</span></span></td>
+    <td class="mono num-faint clip-size-cell">${esc(summary)}</td>
     <td class="file-tbl-actions">
       <button class="icon-btn" title="Open viewer" onclick="event.stopPropagation(); openClipGroupViewer(${jsAttr(group.key)})">${svgIcon("play", 14)}</button>
       <button class="icon-btn" title="${expanded ? "Collapse" : "Expand"}" onclick="event.stopPropagation(); toggleClipGroup(${jsAttr(group.key)})">${expanded ? svgIcon("back", 14) : svgIcon("folder", 14)}</button>
@@ -1829,6 +1850,8 @@ function openClipGroupViewer(key) {
 
 function openDashcamFolder(encodedPath) {
   dashcamFolder = decodeURIComponent(encodedPath);
+  dashcamItems = [];
+  dashcamTotalEntries = 0;
   expandedClipGroups.clear();
   dashcamPage = 1;
   loadDashcam();
@@ -1837,7 +1860,7 @@ function openDashcamFolder(encodedPath) {
 function setDashcamPage(page) {
   dashcamPage = Math.max(1, Number(page) || 1);
   expandedClipGroups.clear();
-  renderDashcamRows();
+  loadDashcam();
 }
 
 function renderDashcamRows() {
@@ -1847,10 +1870,11 @@ function renderDashcamRows() {
     return;
   }
   const entries = groupDashcamItems(dashcamItems);
-  const totalPages = Math.max(1, Math.ceil(entries.length / DASHCAM_PAGE_SIZE));
+  const totalEntries = dashcamTotalEntries || entries.length;
+  const totalPages = Math.max(1, Math.ceil(totalEntries / DASHCAM_PAGE_SIZE));
   dashcamPage = Math.min(Math.max(1, dashcamPage), totalPages);
-  const start = (dashcamPage - 1) * DASHCAM_PAGE_SIZE;
-  const visible = entries.slice(start, start + DASHCAM_PAGE_SIZE);
+  const start = dashcamFolder === "TeslaCam/RecentClips" ? (dashcamPage - 1) * DASHCAM_PAGE_SIZE : 0;
+  const visible = dashcamFolder === "TeslaCam/RecentClips" ? entries.slice(start, start + DASHCAM_PAGE_SIZE) : entries;
   let rows = visible.map(entry => {
     if (entry.type === "group") return clipGroupRow(entry);
     const it = entry.item;
@@ -1862,15 +1886,15 @@ function renderDashcamRows() {
     );
   }).join("");
   if (totalPages > 1) {
-    const first = start + 1;
-    const last = Math.min(entries.length, start + visible.length);
+    const first = ((dashcamPage - 1) * DASHCAM_PAGE_SIZE) + 1;
+    const last = Math.min(totalEntries, ((dashcamPage - 1) * DASHCAM_PAGE_SIZE) + visible.length);
     rows += `<tr class="clip-pager-row"><td colspan="4">
       <div class="clip-pager">
-        <div class="clip-pager-info mono">Showing ${first}-${last} of ${entries.length} · page ${dashcamPage} of ${totalPages}</div>
         <div class="clip-pager-actions">
           <button class="btn" type="button" ${dashcamPage <= 1 ? "disabled" : ""} onclick="setDashcamPage(${dashcamPage - 1})">${svgIcon("back", 14)}<span>Previous</span></button>
-          <button class="btn" type="button" ${dashcamPage >= totalPages ? "disabled" : ""} onclick="setDashcamPage(${dashcamPage + 1})"><span>Next</span>${svgIcon("play", 14)}</button>
+          <button class="btn" type="button" ${dashcamPage >= totalPages ? "disabled" : ""} onclick="setDashcamPage(${dashcamPage + 1})"><span>Next</span><span class="next-arrow">${svgIcon("back", 14)}</span></button>
         </div>
+        <div class="clip-pager-info mono">Showing ${first}-${last} of ${totalEntries}<br>Page ${dashcamPage} of ${totalPages}</div>
       </div>
     </td></tr>`;
   }
@@ -1885,7 +1909,7 @@ async function loadDashcam() {
 
   // folder tabs
   document.getElementById("dashcamFolders").innerHTML = DASHCAM_FOLDERS.map(f => `
-    <button class="folder-tab ${dashcamFolder === f.key ? "on" : ""}" onclick="dashcamFolder='${f.key}'; expandedClipGroups.clear(); dashcamPage = 1; loadDashcam();">
+    <button class="folder-tab ${dashcamFolder === f.key ? "on" : ""}" onclick="dashcamFolder='${f.key}'; dashcamItems = []; dashcamTotalEntries = 0; expandedClipGroups.clear(); dashcamPage = 1; loadDashcam();">
       <div class="folder-tab-l">${esc(f.label)}</div>
     </button>
   `).join("");
@@ -1896,8 +1920,11 @@ async function loadDashcam() {
     return;
   }
   try {
-    const list = await api(`/api/list?drive=cam&path=${encodeURIComponent(dashcamFolder)}`);
+    const shouldPageServerSide = dashcamFolder !== "TeslaCam/RecentClips";
+    const offset = shouldPageServerSide ? (dashcamPage - 1) * DASHCAM_PAGE_SIZE : 0;
+    const list = await api(`/api/list?drive=cam&path=${encodeURIComponent(dashcamFolder)}${shouldPageServerSide ? `&limit=${DASHCAM_PAGE_SIZE}&offset=${offset}` : ""}`);
     dashcamItems = list.items || [];
+    dashcamTotalEntries = list.total || dashcamItems.length;
     renderDashcamRows();
   } catch (e) {
     tbody.innerHTML = emptyRow("Could not load clips", e.message);
@@ -1907,7 +1934,7 @@ async function loadDashcam() {
 async function loadPhotobooth() {
   document.getElementById("photoboothBanner").innerHTML = sessionBanner("Start a transfer session to browse and download Photobooth images.");
   const drive = status.drives.cam;
-  document.getElementById("photoboothInfo").textContent = drive?.mounted ? `${status.home_counts?.photobooth ?? 0} photos on ${drive.label}` : "TESLADRIVE not mounted";
+  document.getElementById("photoboothInfo").textContent = drive?.mounted ? `${status.home_counts?.photobooth ?? 0} photos` : "Photobooth not mounted";
   const tbody = document.getElementById("photoboothTable");
   if (!drive?.mounted) {
     tbody.innerHTML = emptyRow("Drive not mounted", "Start a transfer session to view Photobooth images.");
