@@ -579,6 +579,119 @@ def extract_album_art(path):
     return None
 
 
+def require_mutagen():
+    try:
+        import mutagen  # noqa: F401
+    except Exception as exc:
+        raise ValueError("Music editing needs python3-mutagen installed on the Pi.") from exc
+
+
+def read_music_metadata(path):
+    require_mutagen()
+    from mutagen import File as MutagenFile
+
+    audio = MutagenFile(path, easy=True)
+    if audio is None:
+        raise ValueError("Unsupported audio metadata format.")
+
+    def first(*keys):
+        for key in keys:
+            values = audio.get(key)
+            if values:
+                return str(values[0])
+        return ""
+
+    return {
+        "title": first("title"),
+        "artist": first("artist", "albumartist"),
+        "album": first("album"),
+        "track": first("tracknumber"),
+    }
+
+
+def write_music_metadata(path, fields, art_file=None):
+    require_mutagen()
+    from mutagen import File as MutagenFile
+
+    suffix = path.suffix.lower()
+    audio = MutagenFile(path, easy=True)
+    if audio is None:
+        raise ValueError("Unsupported audio metadata format.")
+    for key, value in {
+        "title": fields.get("title", ""),
+        "artist": fields.get("artist", ""),
+        "album": fields.get("album", ""),
+        "tracknumber": fields.get("track", ""),
+    }.items():
+        value = str(value or "").strip()
+        if value:
+            audio[key] = [value]
+        elif key in audio:
+            del audio[key]
+    audio.save()
+
+    if not art_file or not art_file.get("data"):
+        os.sync()
+        return {"ok": True}
+
+    image = art_file["data"]
+    if len(image) > MAX_ART_BYTES:
+        raise ValueError("Album art must be 8 MB or smaller.")
+    mime = guess_image_type(image)
+    if mime not in {"image/jpeg", "image/png"}:
+        raise ValueError("Album art must be a JPG or PNG.")
+
+    if suffix == ".mp3":
+        from mutagen.id3 import APIC, ID3, ID3NoHeaderError
+        try:
+            tags = ID3(path)
+        except ID3NoHeaderError:
+            tags = ID3()
+        tags.delall("APIC")
+        tags.add(APIC(encoding=3, mime=mime, type=3, desc="Cover", data=image))
+        tags.save(path)
+    elif suffix == ".flac":
+        from mutagen.flac import FLAC, Picture
+        audio = FLAC(path)
+        audio.clear_pictures()
+        picture = Picture()
+        picture.type = 3
+        picture.mime = mime
+        picture.desc = "Cover"
+        picture.data = image
+        audio.add_picture(picture)
+        audio.save()
+    elif suffix in {".m4a", ".aac", ".mp4"}:
+        from mutagen.mp4 import MP4, MP4Cover
+        audio = MP4(path)
+        fmt = MP4Cover.FORMAT_PNG if mime == "image/png" else MP4Cover.FORMAT_JPEG
+        audio["covr"] = [MP4Cover(image, imageformat=fmt)]
+        audio.save()
+    else:
+        raise ValueError("Album art editing is supported for MP3, FLAC, M4A, and AAC.")
+    os.sync()
+    return {"ok": True}
+
+
+def rename_file(drive_key, rel, new_name):
+    if drive_key not in DRIVES:
+        raise ValueError("Unknown drive.")
+    root = DRIVES[drive_key]["root"]
+    target, rel = safe_join(root, rel)
+    if not target.is_file():
+        raise ValueError("Rename path is not a file.")
+    allowed = {".fseq", ".mp3", ".wav"} if drive_key == "sounds" and posixpath.dirname(rel) == "LightShow" else None
+    if allowed is None:
+        raise ValueError("This file cannot be renamed here.")
+    filename = validate_filename(new_name, allowed)
+    destination = target.with_name(filename)
+    if destination.exists() and destination != target:
+        raise ValueError("A file with that name already exists.")
+    target.rename(destination)
+    os.sync()
+    return {"ok": True, "drive": drive_key, "path": posixpath.join(posixpath.dirname(rel), filename), "filename": filename}
+
+
 def delete_path(drive_key, rel):
     if not DELETES_ENABLED:
         raise ValueError("Deletes are disabled.")
@@ -633,6 +746,8 @@ class PortalHandler(BaseHTTPRequestHandler):
                 self.download(parsed)
             elif parsed.path == "/art":
                 self.album_art(parsed)
+            elif parsed.path == "/api/music-metadata":
+                self.handle_music_metadata_get(parsed)
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
         except Exception as exc:
@@ -675,6 +790,10 @@ class PortalHandler(BaseHTTPRequestHandler):
                 self.send_json(get_status())
             elif parsed.path == "/upload":
                 self.handle_upload()
+            elif parsed.path == "/api/rename":
+                self.handle_rename()
+            elif parsed.path == "/api/music-metadata":
+                self.handle_music_metadata_post()
             elif parsed.path == "/api/delete":
                 self.handle_delete()
             else:
@@ -796,18 +915,60 @@ class PortalHandler(BaseHTTPRequestHandler):
             "filename": filename,
         })
 
+    def read_json_body(self):
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        body = self.rfile.read(length) if length else b""
+        try:
+            return json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            raise ValueError("Request body must be JSON.")
+
+    def handle_music_metadata_get(self, parsed):
+        query = parse_qs(parsed.query)
+        drive_key = query.get("drive", ["music"])[0]
+        rel = query.get("path", [""])[0]
+        if drive_key != "music":
+            raise ValueError("Music metadata is only available for music files.")
+        target, _ = safe_join(DRIVES["music"]["root"], rel)
+        if not target.is_file():
+            raise ValueError("Music path is not a file.")
+        self.send_json(read_music_metadata(target))
+
+    def handle_music_metadata_post(self):
+        status = get_status()
+        if not status["session_active"]:
+            raise ValueError("Start a transfer session before editing music.")
+        fields, files = parse_multipart(self.headers, self.rfile)
+        drive_key = fields.get("drive", "music")
+        rel = fields.get("path", "")
+        if drive_key != "music" or not status["drives"].get("music", {}).get("mounted"):
+            raise ValueError("Music drive is not mounted.")
+        target, _ = safe_join(DRIVES["music"]["root"], rel)
+        if not target.is_file():
+            raise ValueError("Music path is not a file.")
+        if target.suffix.lower() not in {".mp3", ".flac", ".m4a", ".aac"}:
+            raise ValueError("Metadata editing is supported for MP3, FLAC, M4A, and AAC.")
+        self.send_json(write_music_metadata(target, fields, files.get("art")))
+
+    def handle_rename(self):
+        status = get_status()
+        if not status["session_active"]:
+            raise ValueError("Start a transfer session before renaming.")
+        payload = self.read_json_body()
+        drive_key = payload.get("drive", "")
+        rel = payload.get("path", "")
+        new_name = payload.get("new_name", "")
+        if not status["drives"].get(drive_key, {}).get("mounted"):
+            raise ValueError("Drive is not mounted.")
+        self.send_json(rename_file(drive_key, rel, new_name))
+
     def handle_delete(self):
         if not DELETES_ENABLED:
             raise ValueError("Deletes are disabled.")
         status = get_status()
         if not status["session_active"]:
             raise ValueError("Start a transfer session before deleting.")
-        length = int(self.headers.get("Content-Length", "0") or "0")
-        body = self.rfile.read(length) if length else b""
-        try:
-            payload = json.loads(body or b"{}")
-        except json.JSONDecodeError:
-            raise ValueError("Delete request body must be JSON.")
+        payload = self.read_json_body()
         drive_key = payload.get("drive", "")
         rel = payload.get("path", "")
         if not status["drives"].get(drive_key, {}).get("mounted"):
@@ -945,6 +1106,10 @@ APP_HTML = r"""<!doctype html>
   .rj-reason { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
   .rj-dismiss { width: 26px; height: 26px; border: 0; background: transparent; color: var(--muted); border-radius: 4px; display: grid; place-items: center; }
   .rj-dismiss:hover { background: var(--surface-2); color: var(--text); }
+  .upload-progress { width: 100%; min-width: 180px; }
+  .upload-progress-label { display: flex; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 11.5px; margin-bottom: 6px; }
+  .upload-progress-track { height: 5px; border-radius: 999px; overflow: hidden; background: var(--surface-2); border: 1px solid var(--hairline); }
+  .upload-progress-fill { height: 100%; width: 0; background: var(--text); transition: width 120ms; }
 
   /* Folder tabs */
   .folder-tabs { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 0; border: 1px solid var(--hairline); border-radius: 10px; background: var(--surface); overflow: hidden; margin-bottom: 18px; }
@@ -1060,6 +1225,17 @@ APP_HTML = r"""<!doctype html>
   .splash-sub, .extend-sub { color: var(--muted); margin: 14px 0 22px; }
   .splash-actions, .extend-actions { display: flex; flex-wrap: wrap; gap: 10px; }
   .session-timer { color: var(--error); }
+  .edit-modal { position: fixed; inset: 0; z-index: 48; display: grid; place-items: center; padding: 18px; background: rgba(0,0,0,.82); }
+  .edit-modal.hidden { display: none; }
+  .edit-card { width: min(520px, 100%); max-height: calc(100vh - 36px); overflow: auto; background: var(--surface); border: 1px solid var(--hairline-2); border-radius: 12px; padding: 20px; box-shadow: 0 24px 80px rgba(0,0,0,.36); }
+  .edit-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; }
+  .edit-title { font-size: 19px; font-weight: 500; line-height: 1.2; }
+  .edit-form { display: grid; gap: 12px; }
+  .edit-grid { display: grid; grid-template-columns: 1fr 120px; gap: 12px; }
+  .field { display: grid; gap: 6px; }
+  .field label { color: var(--muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+  .field input { width: 100%; min-height: 38px; border-radius: 7px; border: 1px solid var(--hairline-2); background: var(--bg); color: var(--text); padding: 8px 10px; }
+  .edit-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
   .video-modal { position: fixed; inset: 0; z-index: 35; display: grid; place-items: center; padding: 18px; background: rgba(0,0,0,.82); }
   .video-modal.hidden { display: none; }
   .video-shell { width: min(1040px, 100%); max-height: calc(100vh - 32px); display: grid; gap: 10px; }
@@ -1094,6 +1270,7 @@ APP_HTML = r"""<!doctype html>
     .set-nav { position: static; flex-direction: row; flex-wrap: wrap; overflow-x: auto; }
     .uz { grid-template-columns: 1fr; text-align: left; gap: 14px; padding: 18px; }
     .uz-actions { align-items: flex-start; }
+    .upload-progress { min-width: 0; }
     .topbar-r .status-chip:nth-child(n+2) { display: none; }
     .file-tbl-actions { min-width: 260px; }
     .audio-preview { width: min(220px, 38vw); }
@@ -1126,7 +1303,7 @@ APP_HTML = r"""<!doctype html>
     .file-tbl-actions { min-width: 0; text-align: left; margin-top: 10px; grid-column: 2 / 4; }
     .clip-row .file-tbl-actions { display: none; }
     .clip-size-cell { display: none !important; }
-    .audio-row-actions { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 28px; gap: 10px; align-items: center; }
+    .audio-row-actions { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) repeat(3, 28px); gap: 8px; align-items: center; }
     .audio-preview { width: 100%; min-width: 0; }
     .clip-summary { gap: 4px; }
     .clip-title { font-size: 15px; }
@@ -1142,6 +1319,9 @@ APP_HTML = r"""<!doctype html>
     .clip-pager-actions .btn { justify-content: center; }
     .splash-title, .extend-title { font-size: 30px; }
     .splash-card, .extend-card { padding: 22px; }
+    .edit-card { padding: 18px; }
+    .edit-grid { grid-template-columns: 1fr; }
+    .edit-actions { display: grid; grid-template-columns: 1fr 1fr; }
     .video-modal { padding: 8px; align-items: start; }
     .video-shell { max-height: calc(100vh - 16px); overflow: auto; }
     .video-modebar { grid-template-columns: repeat(2, 1fr); }
@@ -1311,6 +1491,15 @@ APP_HTML = r"""<!doctype html>
     <div class="video-hint"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2 21h20L12 3Zm0 6v6m0 3v.5"/></svg><span>Dashcam videos are large. The first play can take a moment on phones, especially outside hotspot mode.</span></div>
   </div>
 </div>
+<div id="editModal" class="edit-modal hidden" onclick="closeEditModal()">
+  <div class="edit-card" onclick="event.stopPropagation()">
+    <div class="edit-head">
+      <div id="editTitle" class="edit-title">Edit file</div>
+      <button class="btn btn-sm" type="button" onclick="closeEditModal()">Close</button>
+    </div>
+    <div id="editBody"></div>
+  </div>
+</div>
 <script>
 /* ============== icon paths ============== */
 const ICONS = {
@@ -1322,6 +1511,7 @@ const ICONS = {
   bell: "M6 8v5l-2 3h16l-2-3V8a6 6 0 0 0-12 0z M9 19a3 3 0 0 0 6 0",
   upload: "M12 16V4M6 10l6-6 6 6M4 20h16",
   download: "M12 4v12m-6-6 6 6 6-6M4 20h16",
+  edit: "M4 20h4L19 9l-4-4L4 16v4zM13 7l4 4",
   trash: "M5 7h14M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3",
   back: "M15 6l-6 6 6 6",
   folder: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",
@@ -1410,6 +1600,24 @@ async function api(path, options) {
   const data = ct.includes("application/json") ? await res.json() : { error: await res.text() };
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
+}
+
+function uploadWithProgress(path, body, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", path);
+    xhr.upload.onprogress = event => {
+      if (event.lengthComputable && onProgress) onProgress(Math.round((event.loaded / event.total) * 100));
+    };
+    xhr.onload = () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText || "{}"); } catch (_) { data = { error: xhr.responseText || "Upload failed" }; }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+      else reject(new Error(data.error || `Request failed (${xhr.status})`));
+    };
+    xhr.onerror = () => reject(new Error("Network error during upload."));
+    xhr.send(body);
+  });
 }
 
 function pauseAllMedia() {
@@ -1821,10 +2029,16 @@ function fileRow(item, drive, onDelete, onOpen) {
   const playAction = isVideo(item)
     ? `<button class="icon-btn" title="Play" onclick="event.stopPropagation(); playVideo(${jsAttr(inlineUrl(item.download))}, ${jsAttr(item.name)})">${svgIcon("play", 14)}</button>`
     : "";
+  const editAction = (!item.is_dir && drive === "music" && ["mp3", "flac", "m4a", "aac"].includes(extOf(item.name)))
+    ? `<button class="icon-btn" title="Edit metadata" onclick="event.stopPropagation(); openMusicEditor(${jsAttr(item.path)})">${svgIcon("edit", 14)}</button>`
+    : (!item.is_dir && drive === "sounds" && ["fseq", "mp3", "wav"].includes(extOf(item.name)))
+      ? `<button class="icon-btn" title="Rename" onclick="event.stopPropagation(); openRenameEditor(${jsAttr(item.path)}, ${jsAttr(item.name)})">${svgIcon("edit", 14)}</button>`
+      : "";
   const actions = item.is_dir
     ? ""
     : `<span class="audio-row-actions">${audioAction(item)}
        ${playAction}
+       ${editAction}
        <a class="icon-btn" href="${item.download}" title="Download" onclick="event.stopPropagation()">${svgIcon("download", 14)}</a>
        ${status.deletes_enabled && status.session_active ? `<button class="icon-btn icon-btn-danger" title="Delete" onclick="event.stopPropagation(); ${onDelete}">${svgIcon("trash", 14)}</button>` : ""}</span>`;
   const click = item.is_dir
@@ -2167,6 +2381,10 @@ function renderUploadZone(pageId) {
     </div>
     <div class="uz-actions">
       <button class="btn btn-solid" onclick="document.getElementById('uz-file-${pageId}').click()">${svgIcon("upload", 15)}<span>Choose files</span></button>
+      <div id="uz-progress-${pageId}" class="upload-progress hidden">
+        <div class="upload-progress-label"><span id="uz-progress-name-${pageId}">Uploading</span><span id="uz-progress-pct-${pageId}">0%</span></div>
+        <div class="upload-progress-track"><div id="uz-progress-fill-${pageId}" class="upload-progress-fill"></div></div>
+      </div>
     </div>
     <input id="uz-file-${pageId}" class="uz-file-input" type="file" accept="${cfg.accept}" multiple onchange="handleUpload('${pageId}', this.files)">
   </div>`;
@@ -2185,12 +2403,23 @@ async function handleUpload(pageId, fileList) {
   const cfg = uploadConfigFor(pageId);
   if (!cfg) return;
   const files = Array.from(fileList || []);
+  const progress = document.getElementById(`uz-progress-${pageId}`);
+  const progressName = document.getElementById(`uz-progress-name-${pageId}`);
+  const progressPct = document.getElementById(`uz-progress-pct-${pageId}`);
+  const progressFill = document.getElementById(`uz-progress-fill-${pageId}`);
   for (const file of files) {
     const body = new FormData();
     body.append("target", cfg.target);
     body.append("file", file);
     try {
-      const data = await api("/upload", { method: "POST", body });
+      if (progress) progress.classList.remove("hidden");
+      if (progressName) progressName.textContent = file.name;
+      if (progressPct) progressPct.textContent = "0%";
+      if (progressFill) progressFill.style.width = "0%";
+      const data = await uploadWithProgress("/upload", body, pct => {
+        if (progressPct) progressPct.textContent = `${pct}%`;
+        if (progressFill) progressFill.style.width = `${pct}%`;
+      });
       toast(`Uploaded ${data.filename}`);
     } catch (e) {
       const reasonText = e.message || "Upload failed";
@@ -2206,6 +2435,7 @@ async function handleUpload(pageId, fileList) {
       renderRejections(pageId);
     }
   }
+  if (progress) progress.classList.add("hidden");
   await refresh();
 }
 
@@ -2229,6 +2459,87 @@ function renderRejections(pageId) {
 function dismissRejection(bucket, id) {
   rejections[bucket] = (rejections[bucket] || []).filter(r => r.id !== id);
   renderRejections(bucket);
+}
+
+function closeEditModal() {
+  document.getElementById("editModal").classList.add("hidden");
+  document.getElementById("editBody").innerHTML = "";
+}
+
+async function openMusicEditor(path) {
+  const item = musicItems.find(it => it.path === path) || { name: path.split("/").pop(), path };
+  document.getElementById("editTitle").textContent = "Edit music";
+  document.getElementById("editModal").classList.remove("hidden");
+  document.getElementById("editBody").innerHTML = `<div class="file-empty-s mono">Loading metadata…</div>`;
+  let meta = {};
+  try {
+    meta = await api(`/api/music-metadata?drive=music&path=${encodeURIComponent(path)}`);
+  } catch (e) {
+    meta = {};
+    toast(e.message, "err");
+  }
+  document.getElementById("editBody").innerHTML = `
+    <form class="edit-form" onsubmit="saveMusicMetadata(event, ${jsAttr(path)})">
+      <div class="field"><label>File</label><input value="${esc(item.name)}" disabled></div>
+      <div class="field"><label>Title</label><input name="title" value="${esc(meta.title || "")}" autocomplete="off"></div>
+      <div class="field"><label>Artist</label><input name="artist" value="${esc(meta.artist || "")}" autocomplete="off"></div>
+      <div class="field"><label>Album</label><input name="album" value="${esc(meta.album || "")}" autocomplete="off"></div>
+      <div class="edit-grid">
+        <div class="field"><label>Album art</label><input name="art" type="file" accept="image/png,image/jpeg"></div>
+        <div class="field"><label>Track #</label><input name="track" value="${esc(meta.track || "")}" inputmode="numeric" autocomplete="off"></div>
+      </div>
+      <div class="edit-actions">
+        <button class="btn" type="button" onclick="closeEditModal()">Cancel</button>
+        <button class="btn btn-solid" type="submit">Save changes</button>
+      </div>
+    </form>`;
+}
+
+async function saveMusicMetadata(event, path) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const body = new FormData(form);
+  body.append("drive", "music");
+  body.append("path", path);
+  try {
+    await uploadWithProgress("/api/music-metadata", body);
+    toast("Music details updated");
+    closeEditModal();
+    await refresh();
+  } catch (e) {
+    toast(e.message, "err");
+  }
+}
+
+function openRenameEditor(path, name) {
+  document.getElementById("editTitle").textContent = "Rename light show file";
+  document.getElementById("editModal").classList.remove("hidden");
+  document.getElementById("editBody").innerHTML = `
+    <form class="edit-form" onsubmit="saveRename(event, ${jsAttr(path)})">
+      <div class="field"><label>File name</label><input name="new_name" value="${esc(name)}" autocomplete="off" required></div>
+      <div class="file-empty-s">Keep the extension the same, and keep paired .fseq/audio names matching.</div>
+      <div class="edit-actions">
+        <button class="btn" type="button" onclick="closeEditModal()">Cancel</button>
+        <button class="btn btn-solid" type="submit">Rename</button>
+      </div>
+    </form>`;
+}
+
+async function saveRename(event, path) {
+  event.preventDefault();
+  const newName = new FormData(event.currentTarget).get("new_name");
+  try {
+    await api("/api/rename", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ drive: "sounds", path, new_name: newName })
+    });
+    toast("Renamed");
+    closeEditModal();
+    await refresh();
+  } catch (e) {
+    toast(e.message, "err");
+  }
 }
 
 /* ============== DELETE ============== */

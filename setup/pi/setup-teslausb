@@ -237,6 +237,11 @@ function update_package_index () {
   apt-get update
 }
 
+function install_portal_packages () {
+  setup_progress "Installing portal metadata editor packages..."
+  apt-get --assume-yes install python3-mutagen
+}
+
 function upgrade_packages () {
   if [ "$UPGRADE_PACKAGES" = true ]
   then
@@ -251,6 +256,7 @@ export -f setup_progress
 export HEADLESS_SETUP
 
 update_package_index
+install_portal_packages
 
 headless_setup_populate_variables
 
