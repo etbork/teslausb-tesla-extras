@@ -1057,6 +1057,8 @@ APP_HTML = r"""<!doctype html>
   @media (max-width: 560px) {
     .home-tiles { grid-template-columns: 1fr; }
     .folder-tabs { grid-template-columns: repeat(2, 1fr); }
+    .folder-tab:nth-child(-n+2) { border-bottom: 1px solid var(--hairline); }
+    .folder-tab:nth-child(2n) { border-right: 0; }
     .lc-info { grid-template-columns: 1fr; }
     .topbar { padding: 12px 16px; }
     .mn { padding: 20px 16px 60px; }
