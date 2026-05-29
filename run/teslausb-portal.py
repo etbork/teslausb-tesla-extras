@@ -711,6 +711,26 @@ def delete_path(drive_key, rel):
     return {"ok": True, "drive": drive_key, "path": rel}
 
 
+def delete_media_path(drive_key, rel):
+    if drive_key not in DRIVES:
+        raise ValueError("Unknown drive.")
+    parent = posixpath.dirname(rel)
+    allowed = (
+        drive_key == "music" and parent == "Music"
+    ) or (
+        drive_key == "sounds" and parent == "LightShow"
+    )
+    if not allowed:
+        raise ValueError("Only Music and LightShow files can be deleted here.")
+    root = DRIVES[drive_key]["root"]
+    target, rel = safe_join(root, rel)
+    if not target.is_file():
+        raise ValueError("Delete path is not a file.")
+    target.unlink()
+    os.sync()
+    return {"ok": True, "drive": drive_key, "path": rel}
+
+
 class PortalHandler(BaseHTTPRequestHandler):
     server_version = "TeslaUSBPortal/2.1"
 
@@ -796,6 +816,8 @@ class PortalHandler(BaseHTTPRequestHandler):
                 self.handle_music_metadata_post()
             elif parsed.path == "/api/delete":
                 self.handle_delete()
+            elif parsed.path == "/api/media-delete":
+                self.handle_media_delete()
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
         except Exception as exc:
@@ -975,6 +997,17 @@ class PortalHandler(BaseHTTPRequestHandler):
             raise ValueError("Drive is not mounted.")
         self.send_json(delete_path(drive_key, rel))
 
+    def handle_media_delete(self):
+        status = get_status()
+        if not status["session_active"]:
+            raise ValueError("Start a transfer session before deleting.")
+        payload = self.read_json_body()
+        drive_key = payload.get("drive", "")
+        rel = payload.get("path", "")
+        if not status["drives"].get(drive_key, {}).get("mounted"):
+            raise ValueError("Drive is not mounted.")
+        self.send_json(delete_media_path(drive_key, rel))
+
 
 APP_HTML = r"""<!doctype html>
 <html lang="en" data-page="home">
@@ -1053,6 +1086,12 @@ APP_HTML = r"""<!doctype html>
   .icon-btn { width: 28px; height: 28px; border-radius: 5px; background: transparent; border: 0; display: inline-grid; place-items: center; color: var(--muted); }
   .icon-btn:hover { background: var(--surface-2); color: var(--text); }
   .icon-btn-danger:hover { background: color-mix(in oklch, var(--error) 14%, transparent); color: var(--error); }
+  .menu-wrap { position: relative; display: inline-grid; place-items: center; }
+  .file-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 18; min-width: 150px; display: grid; padding: 6px; border: 1px solid var(--hairline-2); border-radius: 9px; background: var(--surface-2); box-shadow: 0 14px 34px rgba(0,0,0,.34); }
+  .file-menu.hidden { display: none; }
+  .file-menu-item { min-height: 36px; display: flex; align-items: center; gap: 9px; padding: 8px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text); text-align: left; font-size: 13px; }
+  .file-menu-item:hover { background: var(--surface); }
+  .file-menu-item.danger { color: var(--error); }
 
   /* Cards */
   .card { background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--radius); }
@@ -1303,7 +1342,7 @@ APP_HTML = r"""<!doctype html>
     .file-tbl-actions { min-width: 0; text-align: left; margin-top: 10px; grid-column: 2 / 4; }
     .clip-row .file-tbl-actions { display: none; }
     .clip-size-cell { display: none !important; }
-    .audio-row-actions { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) repeat(3, 28px); gap: 8px; align-items: center; }
+    .audio-row-actions { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 32px; gap: 8px; align-items: center; }
     .audio-preview { width: 100%; min-width: 0; }
     .clip-summary { gap: 4px; }
     .clip-title { font-size: 15px; }
@@ -1512,6 +1551,7 @@ const ICONS = {
   upload: "M12 16V4M6 10l6-6 6 6M4 20h16",
   download: "M12 4v12m-6-6 6 6 6-6M4 20h16",
   edit: "M4 20h4L19 9l-4-4L4 16v4zM13 7l4 4",
+  dots: "M5 12h.01M12 12h.01M19 12h.01",
   trash: "M5 7h14M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3",
   back: "M15 6l-6 6 6 6",
   folder: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",
@@ -2025,21 +2065,46 @@ function audioAction(item) {
   return isAudio(item) ? `<audio class="audio-preview" controls preload="none" src="${inlineUrl(item.download)}" onclick="event.stopPropagation()"></audio>` : "";
 }
 
+function canUseMediaMenu(item, drive) {
+  if (item.is_dir) return false;
+  return (drive === "music" && posixpathParent(item.path) === "Music")
+    || (drive === "sounds" && posixpathParent(item.path) === "LightShow");
+}
+
+function posixpathParent(path) {
+  const parts = String(path || "").split("/");
+  parts.pop();
+  return parts.join("/");
+}
+
+function mediaMenu(item, drive) {
+  if (!canUseMediaMenu(item, drive)) return "";
+  const edit = drive === "music" && ["mp3", "flac", "m4a", "aac"].includes(extOf(item.name))
+    ? `<button class="file-menu-item" type="button" onclick="openMusicEditor(${jsAttr(item.path)})">${svgIcon("edit", 14)}<span>Edit</span></button>`
+    : drive === "sounds"
+      ? `<button class="file-menu-item" type="button" onclick="openRenameEditor(${jsAttr(item.path)}, ${jsAttr(item.name)})">${svgIcon("edit", 14)}<span>Edit</span></button>`
+      : "";
+  const id = `menu-${Math.random().toString(36).slice(2)}`;
+  return `<span class="menu-wrap">
+    <button class="icon-btn" title="More" type="button" onclick="event.stopPropagation(); toggleFileMenu(${jsAttr(id)})">${svgIcon("dots", 16, 2.4)}</button>
+    <span id="${id}" class="file-menu hidden" onclick="event.stopPropagation()">
+      <a class="file-menu-item" href="${item.download}" onclick="closeFileMenus()">${svgIcon("download", 14)}<span>Download</span></a>
+      ${edit}
+      <button class="file-menu-item danger" type="button" onclick="deleteMediaFile(${jsAttr(drive)}, ${jsAttr(item.path)}, ${jsAttr(item.name)})">${svgIcon("trash", 14)}<span>Delete</span></button>
+    </span>
+  </span>`;
+}
+
 function fileRow(item, drive, onDelete, onOpen) {
   const playAction = isVideo(item)
     ? `<button class="icon-btn" title="Play" onclick="event.stopPropagation(); playVideo(${jsAttr(inlineUrl(item.download))}, ${jsAttr(item.name)})">${svgIcon("play", 14)}</button>`
     : "";
-  const editAction = (!item.is_dir && drive === "music" && ["mp3", "flac", "m4a", "aac"].includes(extOf(item.name)))
-    ? `<button class="icon-btn" title="Edit metadata" onclick="event.stopPropagation(); openMusicEditor(${jsAttr(item.path)})">${svgIcon("edit", 14)}</button>`
-    : (!item.is_dir && drive === "sounds" && ["fseq", "mp3", "wav"].includes(extOf(item.name)))
-      ? `<button class="icon-btn" title="Rename" onclick="event.stopPropagation(); openRenameEditor(${jsAttr(item.path)}, ${jsAttr(item.name)})">${svgIcon("edit", 14)}</button>`
-      : "";
+  const menuAction = mediaMenu(item, drive);
   const actions = item.is_dir
     ? ""
     : `<span class="audio-row-actions">${audioAction(item)}
        ${playAction}
-       ${editAction}
-       <a class="icon-btn" href="${item.download}" title="Download" onclick="event.stopPropagation()">${svgIcon("download", 14)}</a>
+       ${menuAction || `<a class="icon-btn" href="${item.download}" title="Download" onclick="event.stopPropagation()">${svgIcon("download", 14)}</a>`}
        ${status.deletes_enabled && status.session_active ? `<button class="icon-btn icon-btn-danger" title="Delete" onclick="event.stopPropagation(); ${onDelete}">${svgIcon("trash", 14)}</button>` : ""}</span>`;
   const click = item.is_dir
     ? `onclick="${onOpen || ""}"`
@@ -2466,6 +2531,19 @@ function closeEditModal() {
   document.getElementById("editBody").innerHTML = "";
 }
 
+function closeFileMenus() {
+  document.querySelectorAll(".file-menu").forEach(menu => menu.classList.add("hidden"));
+}
+
+function toggleFileMenu(id) {
+  const menu = document.getElementById(id);
+  const wasHidden = menu?.classList.contains("hidden");
+  closeFileMenus();
+  if (menu && wasHidden) menu.classList.remove("hidden");
+}
+
+document.addEventListener("click", closeFileMenus);
+
 async function openMusicEditor(path) {
   const item = musicItems.find(it => it.path === path) || { name: path.split("/").pop(), path };
   document.getElementById("editTitle").textContent = "Edit music";
@@ -2543,6 +2621,34 @@ async function saveRename(event, path) {
 }
 
 /* ============== DELETE ============== */
+function confirmDeleteMedia(drive, path, name) {
+  document.getElementById("editTitle").textContent = "Delete file?";
+  document.getElementById("editModal").classList.remove("hidden");
+  document.getElementById("editBody").innerHTML = `
+    <div class="edit-form">
+      <div class="file-empty-s">This removes the file from TeslaDrive.</div>
+      <div class="field"><label>File</label><input value="${esc(name || path)}" disabled></div>
+      <div class="edit-actions">
+        <button class="btn" type="button" onclick="closeEditModal()">Cancel</button>
+        <button class="btn btn-danger" type="button" onclick="deleteMediaFileConfirmed(${jsAttr(drive)}, ${jsAttr(path)})">Delete</button>
+      </div>
+    </div>`;
+}
+
+function deleteMediaFile(drive, path, name) {
+  closeFileMenus();
+  confirmDeleteMedia(drive, path, name);
+}
+
+async function deleteMediaFileConfirmed(drive, path) {
+  try {
+    await api("/api/media-delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ drive, path }) });
+    toast("Deleted");
+    closeEditModal();
+    await refresh();
+  } catch (e) { toast(e.message, "err"); }
+}
+
 async function deleteItem(drive, path) {
   if (!status.deletes_enabled) { toast("Deletes are disabled", "err"); return; }
   if (!confirm(`Delete "${path}"? This cannot be undone.`)) return;
