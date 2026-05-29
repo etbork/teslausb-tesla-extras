@@ -947,6 +947,7 @@ APP_HTML = r"""<!doctype html>
   .file-tbl td { padding: 12px 14px; border-bottom: 1px solid var(--hairline); }
   .file-tbl tr { cursor: pointer; }
   .file-tbl tr:hover { background: var(--surface-2); }
+  .clip-row, .dash-folder-row { touch-action: manipulation; }
   .file-tbl-actions { white-space: nowrap; text-align: right; min-width: 330px; }
   .file-tbl-icon { color: var(--faint); width: 30px; }
   .dash-thumb { width: 54px; height: 32px; object-fit: cover; border-radius: 5px; background: var(--bg); border: 1px solid var(--hairline); display: block; }
@@ -1871,12 +1872,21 @@ function clipGroupRow(group) {
       </span>
     </div>`).join("")}
   </div></td></tr>` : "";
-  return `<tr class="clip-row" onclick="openClipGroupViewer(${jsAttr(group.key)})">
+  return `<tr class="clip-row" data-clip-key="${esc(group.key)}" role="button" tabindex="0">
     <td class="file-tbl-icon">${clipStack(group.files)}</td>
     <td class="file-name"><span class="clip-summary"><span class="clip-title">${esc(formatClipTime(group.key))}</span><span class="clip-sub mono">${esc(group.key)}</span><span class="clip-sub mono">${esc(summary)}</span></span></td>
     <td class="mono num-faint clip-size-cell">${esc(summary)}</td>
     <td class="file-tbl-actions"></td>
   </tr>${filesHtml}`;
+}
+
+function dashcamFolderRow(item) {
+  return `<tr class="dash-folder-row" data-dash-folder="${esc(encodeURIComponent(item.path))}" role="button" tabindex="0">
+    <td class="file-tbl-icon">${previewCell(item, "cam")}</td>
+    <td class="file-name"><span class="clip-summary"><span class="clip-title">${esc(item.name)}</span><span class="clip-sub mono">${esc(item.size_label || "folder")}</span></span></td>
+    <td class="mono num-faint clip-size-cell">${esc(item.size_label || "folder")}</td>
+    <td class="file-tbl-actions"></td>
+  </tr>`;
 }
 
 function toggleClipGroup(key) {
@@ -1925,12 +1935,8 @@ function renderDashcamRows() {
   let rows = visible.map(entry => {
     if (entry.type === "group") return clipGroupRow(entry);
     const it = entry.item;
-    return fileRow(
-      it,
-      "cam",
-      `deleteItem('cam', ${jsStr(it.path)})`,
-      `openDashcamFolder('${encodeURIComponent(it.path)}')`
-    );
+    if (it.is_dir) return dashcamFolderRow(it);
+    return fileRow(it, "cam", `deleteItem('cam', ${jsStr(it.path)})`, "");
   }).join("");
   if (totalPages > 1) {
     const first = ((dashcamPage - 1) * DASHCAM_PAGE_SIZE) + 1;
@@ -1946,6 +1952,29 @@ function renderDashcamRows() {
     </td></tr>`;
   }
   tbody.innerHTML = rows;
+  wireDashcamRowClicks();
+}
+
+function wireDashcamRowClicks() {
+  const tbody = document.getElementById("dashcamTable");
+  tbody.querySelectorAll("[data-dash-folder]").forEach(row => {
+    row.onclick = () => openDashcamFolder(row.dataset.dashFolder);
+    row.onkeydown = event => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openDashcamFolder(row.dataset.dashFolder);
+      }
+    };
+  });
+  tbody.querySelectorAll("[data-clip-key]").forEach(row => {
+    row.onclick = () => openClipGroupViewer(row.dataset.clipKey);
+    row.onkeydown = event => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openClipGroupViewer(row.dataset.clipKey);
+      }
+    };
+  });
 }
 
 /* ============== DASH CAM ============== */
