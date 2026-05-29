@@ -1068,6 +1068,10 @@ APP_HTML = r"""<!doctype html>
   .video-modebar { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 8px; align-items: stretch; }
   .camera-btn { min-height: 44px; justify-content: center; font-size: 13px; }
   .camera-btn.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .video-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .video-download-panel { display: grid; grid-template-columns: repeat(auto-fit, minmax(126px, 1fr)); gap: 8px; padding: 10px; border: 1px solid var(--hairline); border-radius: 10px; background: var(--surface); }
+  .video-download-panel.hidden { display: none; }
+  .download-angle { min-height: 40px; }
   .video-grid { display: grid; grid-template-columns: 1fr; gap: 8px; align-items: center; }
   .video-cell { min-width: 0; border: 1px solid var(--hairline-2); border-radius: 8px; overflow: hidden; background: black; }
   .video-cell-label { display: flex; justify-content: space-between; gap: 8px; padding: 7px 9px; background: var(--surface); color: var(--muted); font-size: 11px; }
@@ -1120,8 +1124,8 @@ APP_HTML = r"""<!doctype html>
     .file-tbl-actions { min-width: 0; text-align: right; margin-top: 10px; grid-column: 2 / 4; }
     .clip-row .file-tbl-actions { display: none; }
     .clip-size-cell { display: none !important; }
-    .audio-row-actions { width: 100%; justify-content: flex-end; }
-    .audio-preview { width: min(245px, 68vw); }
+    .audio-row-actions { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 28px; gap: 10px; align-items: center; }
+    .audio-preview { width: 100%; min-width: 0; }
     .clip-summary { gap: 4px; }
     .clip-title { font-size: 15px; }
     .clip-sub { font-size: 12px; overflow-wrap: anywhere; }
@@ -1139,6 +1143,8 @@ APP_HTML = r"""<!doctype html>
     .video-modal { padding: 8px; align-items: start; }
     .video-shell { max-height: calc(100vh - 16px); overflow: auto; }
     .video-modebar { grid-template-columns: repeat(2, 1fr); }
+    .video-actions { justify-content: stretch; }
+    .video-actions .btn { width: 100%; }
     .camera-btn { min-height: 48px; }
     .session-float { grid-template-columns: 1fr; bottom: calc(env(safe-area-inset-bottom, 0px) + 58px); }
     .session-float-actions { display: grid; grid-template-columns: 1fr 1fr; }
@@ -1298,7 +1304,9 @@ APP_HTML = r"""<!doctype html>
     </div>
     <div id="videoGrid" class="video-grid"></div>
     <div id="videoModebar" class="video-modebar"></div>
-    <div class="video-hint">${svgIcon("warn", 15, 1.7)}<span>Dashcam videos are large. The first play can take a moment on phones, especially outside hotspot mode.</span></div>
+    <div class="video-actions"><button class="btn" type="button" onclick="toggleVideoDownloads()"><span>Download clips</span></button></div>
+    <div id="videoDownloadPanel" class="video-download-panel hidden"></div>
+    <div class="video-hint"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2 21h20L12 3Zm0 6v6m0 3v.5"/></svg><span>Dashcam videos are large. The first play can take a moment on phones, especially outside hotspot mode.</span></div>
   </div>
 </div>
 <script>
@@ -1460,6 +1468,30 @@ function renderVideoModebar() {
   }).join("");
 }
 
+function renderVideoDownloadPanel(forceShow = null) {
+  const panel = document.getElementById("videoDownloadPanel");
+  if (!panel) return;
+  const wasOpen = !panel.classList.contains("hidden");
+  const show = forceShow == null ? wasOpen : forceShow;
+  const files = (videoViewer.files || []).slice().sort((a, b) => cameraRank(a.name) - cameraRank(b.name) || cameraLabel(a.name).localeCompare(cameraLabel(b.name)));
+  if (!show || !files.length) {
+    panel.classList.add("hidden");
+    panel.innerHTML = "";
+    return;
+  }
+  panel.innerHTML = files.map(file => `
+    <a class="btn download-angle" href="${file.download}" onclick="event.stopPropagation()">
+      ${svgIcon("download", 14)}<span>${esc(cameraLabel(file.name))}</span>
+    </a>
+  `).join("");
+  panel.classList.remove("hidden");
+}
+
+function toggleVideoDownloads() {
+  const panel = document.getElementById("videoDownloadPanel");
+  renderVideoDownloadPanel(panel?.classList.contains("hidden"));
+}
+
 function renderVideoGrid() {
   const grid = document.getElementById("videoGrid");
   const files = videoViewer.files;
@@ -1468,6 +1500,7 @@ function renderVideoGrid() {
   grid.className = "video-grid";
   const active = byCamera[videoViewer.activeCamera] || byCamera.front || files[0];
   grid.innerHTML = buildVideoCell(cameraKey(active?.name) || "front", active, true);
+  renderVideoDownloadPanel(false);
   wireViewerVideos();
   updateVideoViewerUI();
 }
@@ -1526,6 +1559,8 @@ function closeVideo() {
   }
   document.getElementById("videoGrid").innerHTML = "";
   document.getElementById("videoModebar").innerHTML = "";
+  document.getElementById("videoDownloadPanel").innerHTML = "";
+  document.getElementById("videoDownloadPanel").classList.add("hidden");
   videoViewer = { playing: false, syncing: false, files: [], title: "", key: "", activeCamera: "" };
   modal.classList.add("hidden");
 }
