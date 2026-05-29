@@ -1395,12 +1395,27 @@ function seekVideoViewer(value) {
 function toggleVideoViewer() {
   const videos = viewerVideos();
   if (!videos.length) return;
-  videoViewer.playing = !videoViewer.playing;
-  for (const video of videos) {
-    if (videoViewer.playing) video.play().catch(() => {});
-    else video.pause();
+  if (videoViewer.playing) {
+    videoViewer.playing = false;
+    for (const video of videos) video.pause();
+    updateVideoViewerUI();
+    return;
   }
-  updateVideoViewerUI();
+  const lead = videos[0];
+  for (const video of videos) video.muted = true;
+  lead.play().then(() => {
+    videoViewer.playing = true;
+    const leadTime = lead.currentTime;
+    for (const video of videos.slice(1)) {
+      video.currentTime = leadTime;
+      video.play().catch(() => {});
+    }
+    updateVideoViewerUI();
+  }).catch(err => {
+    videoViewer.playing = false;
+    toast(`Could not play video: ${err?.message || "tap again"}`, "err");
+    updateVideoViewerUI();
+  });
 }
 
 function buildVideoCell(slot, file, single = false) {
@@ -1439,6 +1454,8 @@ function openVideoViewer(files, title) {
     ].join("");
   }
   for (const video of viewerVideos()) {
+    video.muted = true;
+    video.setAttribute("muted", "");
     video.addEventListener("loadedmetadata", updateVideoViewerUI);
     video.addEventListener("timeupdate", syncViewerToLead);
     video.addEventListener("pause", () => {
