@@ -1035,9 +1035,6 @@ APP_HTML = r"""<!doctype html>
   .video-cell { min-width: 0; border: 1px solid var(--hairline-2); border-radius: 8px; overflow: hidden; background: black; }
   .video-cell-label { display: flex; justify-content: space-between; gap: 8px; padding: 7px 9px; background: var(--surface); color: var(--muted); font-size: 11px; }
   .video-player { width: 100%; aspect-ratio: 16 / 9; background: black; display: block; object-fit: contain; }
-  .video-controls { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--hairline-2); border-radius: 8px; background: var(--surface); }
-  .video-scrub { width: 100%; min-width: 0; accent-color: var(--text); }
-  .video-time { color: var(--muted); font-size: 11px; }
   .video-hint { color: var(--muted); font-size: 11.5px; text-align: center; margin: -3px 0 0; }
 
   /* Responsive */
@@ -1094,8 +1091,6 @@ APP_HTML = r"""<!doctype html>
     .video-shell { max-height: calc(100vh - 16px); overflow: auto; }
     .video-modebar { grid-template-columns: repeat(2, 1fr); }
     .camera-btn { min-height: 48px; }
-    .video-controls { grid-template-columns: 1fr; }
-    .video-time { text-align: center; }
   }
 
   svg { display: block; }
@@ -1251,10 +1246,6 @@ APP_HTML = r"""<!doctype html>
     </div>
     <div id="videoGrid" class="video-grid"></div>
     <div id="videoModebar" class="video-modebar"></div>
-    <div class="video-controls">
-      <input id="videoScrub" class="video-scrub" type="range" min="0" max="0" step="0.1" value="0" oninput="seekVideoViewer(this.value)">
-      <span id="videoTime" class="video-time mono">0:00 / 0:00</span>
-    </div>
     <div class="video-hint">Use the video controls, or choose another camera angle below.</div>
   </div>
 </div>
@@ -1376,33 +1367,8 @@ function viewerVideos() {
   return Array.from(document.querySelectorAll("#videoGrid video"));
 }
 
-function fmtTime(seconds) {
-  const s = Math.max(0, Math.floor(Number(seconds) || 0));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-}
-
 function updateVideoViewerUI() {
-  const videos = viewerVideos();
-  const lead = videos[0];
-  const duration = lead && Number.isFinite(lead.duration) ? lead.duration : 0;
-  const current = lead ? lead.currentTime : 0;
-  const scrub = document.getElementById("videoScrub");
-  const time = document.getElementById("videoTime");
-  scrub.max = duration ? String(duration) : "0";
-  if (!videoViewer.syncing) scrub.value = String(current || 0);
-  time.textContent = `${fmtTime(current)} / ${fmtTime(duration)}`;
-}
-
-function syncViewerToLead() {
-  updateVideoViewerUI();
-}
-
-function seekVideoViewer(value) {
-  videoViewer.syncing = true;
-  const target = Number(value) || 0;
-  for (const video of viewerVideos()) video.currentTime = target;
-  videoViewer.syncing = false;
-  updateVideoViewerUI();
+  renderVideoModebar();
 }
 
 function buildVideoCell(slot, file, single = false) {
@@ -1455,13 +1421,16 @@ function setVideoCamera(camera) {
   videoViewer.activeCamera = camera;
   videoViewer.playing = false;
   renderVideoGrid();
-  seekVideoViewer(current);
+  const video = viewerVideos()[0];
+  if (video && current) {
+    video.currentTime = current;
+  }
 }
 
 function wireViewerVideos() {
   for (const video of viewerVideos()) {
     video.addEventListener("loadedmetadata", updateVideoViewerUI);
-    video.addEventListener("timeupdate", syncViewerToLead);
+    video.addEventListener("timeupdate", updateVideoViewerUI);
     video.addEventListener("play", () => {
       videoViewer.playing = true;
       updateVideoViewerUI();
