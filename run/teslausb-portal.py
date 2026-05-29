@@ -1119,6 +1119,8 @@ APP_HTML = r"""<!doctype html>
     .file-tbl thead { display: none; }
     .file-tbl tr { display: grid; grid-template-columns: 46px minmax(0, 1fr) 34px; gap: 0 18px; padding: 14px 18px; border-bottom: 1px solid var(--hairline); }
     .file-tbl td { padding: 0; border-bottom: 0; }
+    .file-tbl tr:has(.file-empty) { display: block; padding: 0; }
+    .file-empty { padding: 34px 22px; }
     .file-tbl-icon { grid-row: 1 / span 3; width: auto; align-self: center; display: flex; align-items: center; }
     .file-name { overflow-wrap: anywhere; align-self: center; }
     .file-tbl-actions { min-width: 0; text-align: left; margin-top: 10px; grid-column: 2 / 4; }
