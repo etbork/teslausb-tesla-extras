@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import html
+import hashlib
 import json
 import mimetypes
 import os
@@ -45,6 +46,10 @@ UPLOAD_TARGETS = {
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()+-]{0,120}$")
 MAX_ART_BYTES = 8 * 1024 * 1024
+PREVIEW_DIR = Path(os.environ.get("PORTAL_PREVIEW_DIR", "/tmp/teslausb-portal-previews"))
+PREVIEW_SECONDS = int(os.environ.get("PORTAL_PREVIEW_SECONDS", "15"))
+PREVIEW_TIMEOUT_SECONDS = int(os.environ.get("PORTAL_PREVIEW_TIMEOUT_SECONDS", "900"))
+PREVIEW_SCALE = os.environ.get("PORTAL_PREVIEW_SCALE", "320:180")
 
 
 def run_helper(action):
@@ -400,6 +405,86 @@ def list_directory(drive_key, rel):
     return {"drive": drive_key, "path": rel, "parent": parent, "items": items}
 
 
+def cleanup_old_previews(max_age_seconds=3600):
+    try:
+        PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+        cutoff = time.time() - max_age_seconds
+        for item in PREVIEW_DIR.glob("*.mp4"):
+            try:
+                if item.stat().st_mtime < cutoff:
+                    item.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def dashcam_group_files(key):
+    if not re.match(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$", key or ""):
+        raise ValueError("Invalid dashcam clip key.")
+    root = DRIVES["cam"]["root"]
+    files = {}
+    for path in root.rglob(f"{key}-*.mp4"):
+        if not path.is_file():
+            continue
+        try:
+            safe_join(root, str(path.relative_to(root)))
+        except ValueError:
+            continue
+        match = re.search(r"-(back|front|left_pillar|left_repeater|right_pillar|right_repeater)\.mp4$", path.name, re.I)
+        if match:
+            files[match.group(1).lower()] = path
+    return files
+
+
+def generate_dashcam_preview(key):
+    status = get_status()
+    if not status.get("session_active"):
+        raise ValueError("Start a transfer session before generating a preview.")
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise ValueError("ffmpeg is not installed on this Pi.")
+    cleanup_old_previews()
+    files = dashcam_group_files(key)
+    required = ["front", "back", "left_repeater", "right_repeater"]
+    missing = [camera for camera in required if camera not in files]
+    if missing:
+        raise ValueError(f"Missing cameras for preview: {', '.join(missing)}")
+    PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha1("|".join(str(files[c]) for c in required).encode("utf-8")).hexdigest()[:12]
+    output = PREVIEW_DIR / f"{key}-{digest}-{PREVIEW_SECONDS}s.mp4"
+    if output.exists() and output.stat().st_size > 0:
+        return {"url": f"/preview?file={quote(output.name)}", "cached": True}
+    temp = output.with_suffix(".tmp.mp4")
+    if temp.exists():
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+    cmd = [
+        ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+        "-t", str(PREVIEW_SECONDS), "-i", str(files["front"]),
+        "-t", str(PREVIEW_SECONDS), "-i", str(files["left_repeater"]),
+        "-t", str(PREVIEW_SECONDS), "-i", str(files["right_repeater"]),
+        "-t", str(PREVIEW_SECONDS), "-i", str(files["back"]),
+        "-filter_complex",
+        (
+            f"[0:v]scale={PREVIEW_SCALE},setsar=1,setpts=PTS-STARTPTS[f];"
+            f"[1:v]scale={PREVIEW_SCALE},setsar=1,setpts=PTS-STARTPTS[l];"
+            f"[2:v]scale={PREVIEW_SCALE},setsar=1,setpts=PTS-STARTPTS[r];"
+            f"[3:v]scale={PREVIEW_SCALE},setsar=1,setpts=PTS-STARTPTS[b];"
+            "[f][l][r][b]xstack=inputs=4:layout=320_0|0_180|640_180|320_360:fill=black[v]"
+        ),
+        "-map", "[v]", "-an", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "34",
+        "-movflags", "+faststart", str(temp),
+    ]
+    completed = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=PREVIEW_TIMEOUT_SECONDS)
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stdout.strip() or "ffmpeg preview generation failed.")
+    temp.replace(output)
+    return {"url": f"/preview?file={quote(output.name)}", "cached": False}
+
+
 def synchsafe_to_int(data):
     return ((data[0] & 0x7F) << 21) | ((data[1] & 0x7F) << 14) | ((data[2] & 0x7F) << 7) | (data[3] & 0x7F)
 
@@ -590,6 +675,8 @@ class PortalHandler(BaseHTTPRequestHandler):
                 self.download(parsed)
             elif parsed.path == "/art":
                 self.album_art(parsed)
+            elif parsed.path == "/preview":
+                self.preview(parsed)
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
         except Exception as exc:
@@ -602,6 +689,8 @@ class PortalHandler(BaseHTTPRequestHandler):
                 self.download(parsed, head_only=True)
             elif parsed.path == "/art":
                 self.album_art(parsed, head_only=True)
+            elif parsed.path == "/preview":
+                self.preview(parsed, head_only=True)
             elif parsed.path == "/":
                 data = APP_HTML.encode("utf-8")
                 self.send_response(HTTPStatus.OK)
@@ -634,6 +723,8 @@ class PortalHandler(BaseHTTPRequestHandler):
                 self.handle_upload()
             elif parsed.path == "/api/delete":
                 self.handle_delete()
+            elif parsed.path == "/api/preview":
+                self.handle_preview()
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
         except Exception as exc:
@@ -721,6 +812,68 @@ class PortalHandler(BaseHTTPRequestHandler):
         self.end_headers()
         if not head_only:
             self.wfile.write(image)
+
+    def preview(self, parsed, head_only=False):
+        query = parse_qs(parsed.query)
+        name = os.path.basename(query.get("file", [""])[0])
+        if not name or "/" in name or "\\" in name:
+            raise ValueError("Invalid preview file.")
+        target = (PREVIEW_DIR / name).resolve()
+        if PREVIEW_DIR.resolve() not in target.parents or not target.is_file():
+            raise ValueError("Preview not found.")
+        file_size = target.stat().st_size
+        range_header = self.headers.get("Range", "")
+        start = 0
+        end = file_size - 1
+        status = HTTPStatus.OK
+        if range_header:
+            match = re.match(r"bytes=(\d*)-(\d*)$", range_header.strip())
+            if not match:
+                self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                self.send_header("Content-Range", f"bytes */{file_size}")
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+                return
+            raw_start, raw_end = match.groups()
+            if raw_start == "" and raw_end:
+                start = max(0, file_size - int(raw_end))
+            elif raw_start:
+                start = int(raw_start)
+            if raw_end and raw_start:
+                end = min(file_size - 1, int(raw_end))
+            if start >= file_size or end < start:
+                self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                self.send_header("Content-Range", f"bytes */{file_size}")
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+                return
+            status = HTTPStatus.PARTIAL_CONTENT
+        length = end - start + 1
+        self.send_response(status)
+        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        if status == HTTPStatus.PARTIAL_CONTENT:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+        self.send_header("Cache-Control", "private, max-age=1800")
+        self.end_headers()
+        if head_only:
+            return
+        with target.open("rb") as file:
+            file.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = file.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
+
+    def handle_preview(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        key = str(payload.get("key", ""))
+        self.send_json(generate_dashcam_preview(key))
 
     def handle_upload(self):
         if not UPLOADS_ENABLED:
@@ -1009,6 +1162,8 @@ APP_HTML = r"""<!doctype html>
   .video-title { min-width: 0; font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .video-modebar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
   .video-modebar .btn.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .spin { width: 13px; height: 13px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin 800ms linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .video-grid { display: grid; grid-template-areas: "front" "back"; grid-template-columns: 1fr; gap: 8px; align-items: center; }
   .video-grid.mode-2 { grid-template-areas: "front" "back"; }
   .video-grid.mode-4 { grid-template-areas: ". front ." "left center right" ". back ."; grid-template-columns: 1fr 1.1fr 1fr; }
@@ -1303,7 +1458,7 @@ let settingsSection = "connection";
 let sessionDeadline = 0;
 let extendPromptShown = false;
 let dashcamPage = 1;
-let videoViewer = { playing: false, syncing: false, files: [], title: "", mode: 1, side: "repeater" };
+let videoViewer = { playing: false, syncing: false, files: [], title: "", key: "", mode: 1, side: "repeater", previewing: false };
 const DASHCAM_PAGE_SIZE = 10;
 const SESSION_MS = 5 * 60 * 1000;
 const EXTEND_PROMPT_MS = 2 * 60 * 1000;
@@ -1465,6 +1620,7 @@ function renderVideoModebar() {
     <button class="btn btn-sm ${videoViewer.mode === 2 ? "on" : ""}" type="button" onclick="setVideoMode(2)">2</button>
     <button class="btn btn-sm ${videoViewer.mode === 4 ? "on" : ""}" type="button" onclick="setVideoMode(4)">4</button>
     ${videoViewer.mode === 4 ? `<button class="btn btn-sm" type="button" onclick="toggleVideoSide()">${videoViewer.side === "pillar" ? "Pillars" : "Repeaters"}</button>` : ""}
+    ${videoViewer.key ? `<button class="btn btn-sm" type="button" onclick="buildPreview()">${videoViewer.previewing ? `<span class="spin"></span><span>Preparing</span>` : "Preview 15s"}</button>` : ""}
   `;
 }
 
@@ -1535,9 +1691,9 @@ function wireViewerVideos() {
   }
 }
 
-function openVideoViewer(files, title) {
+function openVideoViewer(files, title, key = "") {
   pauseAllMedia();
-  videoViewer = { playing: false, syncing: false, files: Array.isArray(files) ? files : [], title: title || "Dashcam viewer", mode: 1, side: "repeater" };
+  videoViewer = { playing: false, syncing: false, files: Array.isArray(files) ? files : [], title: title || "Dashcam viewer", key, mode: 1, side: "repeater", previewing: false };
   const modal = document.getElementById("videoModal");
   const videoTitle = document.getElementById("videoTitle");
   videoTitle.textContent = videoViewer.title;
@@ -1550,6 +1706,25 @@ function playVideo(url, title) {
   openVideoViewer([{ name: title || "Video", download: url }], title || "Video");
 }
 
+async function buildPreview() {
+  if (!videoViewer.key || videoViewer.previewing) return;
+  videoViewer.previewing = true;
+  renderVideoModebar();
+  try {
+    const data = await api("/api/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: videoViewer.key })
+    });
+    openVideoViewer([{ name: `${videoViewer.title} preview`, download: data.url }], `${videoViewer.title} · preview`, "");
+    toast(data.cached ? "Preview loaded" : "Preview ready");
+  } catch (e) {
+    toast(e.message, "err");
+    videoViewer.previewing = false;
+    renderVideoModebar();
+  }
+}
+
 function closeVideo() {
   const modal = document.getElementById("videoModal");
   for (const video of viewerVideos()) {
@@ -1559,7 +1734,7 @@ function closeVideo() {
   }
   document.getElementById("videoGrid").innerHTML = "";
   document.getElementById("videoModebar").innerHTML = "";
-  videoViewer = { playing: false, syncing: false, files: [], title: "", mode: 1, side: "repeater" };
+  videoViewer = { playing: false, syncing: false, files: [], title: "", key: "", mode: 1, side: "repeater", previewing: false };
   modal.classList.add("hidden");
 }
 
@@ -1900,7 +2075,7 @@ function filesForClipGroup(key) {
 function openClipGroupViewer(key) {
   const files = filesForClipGroup(key);
   if (!files.length) return;
-  openVideoViewer(files, formatClipTime(key));
+  openVideoViewer(files, formatClipTime(key), key);
 }
 
 function openDashcamFolder(encodedPath) {
