@@ -29,6 +29,8 @@ SESSION_EXTEND_SECONDS = int(os.environ.get("PORTAL_SESSION_EXTEND_SECONDS", str
 SESSION_DEADLINE_FILE = Path(os.environ.get("PORTAL_SESSION_DEADLINE_FILE", "/run/teslausb-portal-session.deadline"))
 SESSION_DEADLINE = 0.0
 SESSION_DEADLINE_LOCK = threading.Lock()
+LAST_SESSION_START = 0.0
+SESSION_STOP_GRACE_SECONDS = 4.0
 
 DRIVES = {
     "cam": {"label": "TESLADRIVE", "title": "Dash cam", "root": Path("/mnt/cam"), "home_path": "TeslaCam"},
@@ -1015,6 +1017,8 @@ class PortalHandler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/session/start":
                 run_helper("start")
+                global LAST_SESSION_START
+                LAST_SESSION_START = time.time()
                 set_session_deadline()
                 self.send_json(get_status())
             elif parsed.path == "/session/extend":
@@ -1024,6 +1028,9 @@ class PortalHandler(BaseHTTPRequestHandler):
                 set_session_deadline(SESSION_EXTEND_SECONDS)
                 self.send_json(get_status())
             elif parsed.path == "/session/stop":
+                if LAST_SESSION_START and time.time() - LAST_SESSION_START < SESSION_STOP_GRACE_SECONDS:
+                    self.send_json(get_status())
+                    return
                 run_helper("stop")
                 clear_session_deadline()
                 self.send_json(get_status())
