@@ -186,7 +186,15 @@ def update_hotspot_settings(ssid, password=None):
     if password and not saw_password:
         updated.append(f"wpa_passphrase={password}")
     HOSTAPD_CONF.write_text("\n".join(updated) + "\n", encoding="utf-8")
-    subprocess.run(["systemctl", "restart", "hostapd"], check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if systemctl_active("hostapd"):
+        subprocess.run(["systemctl", "restart", "hostapd"], check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if shutil.which("nmcli"):
+        existing = run_quiet(["nmcli", "-t", "-f", "NAME", "connection", "show"], timeout=10).splitlines()
+        if HOTSPOT_CONNECTION in existing:
+            command = ["nmcli", "connection", "modify", HOTSPOT_CONNECTION, "802-11-wireless.ssid", ssid]
+            if password:
+                command.extend(["wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", password])
+            run_quiet(command, timeout=15)
     return hotspot_status()
 
 
