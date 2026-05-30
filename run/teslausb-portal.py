@@ -23,6 +23,7 @@ UPLOADS_ENABLED = os.environ.get("PORTAL_UPLOADS_ENABLED", "true").lower() == "t
 DELETES_ENABLED = os.environ.get("PORTAL_DELETES_ENABLED", "false").lower() == "true"
 LOG_FILES = ["/mutable/portal.log"]
 HOSTAPD_CONF = Path(os.environ.get("PORTAL_HOSTAPD_CONF", "/etc/hostapd/hostapd.conf"))
+HOTSPOT_CONNECTION = os.environ.get("PORTAL_HOTSPOT_CONNECTION", "Glovebox Hotspot")
 SESSION_TIMEOUT_SECONDS = int(os.environ.get("PORTAL_SESSION_TIMEOUT_SECONDS", "300"))
 SESSION_EXTEND_SECONDS = int(os.environ.get("PORTAL_SESSION_EXTEND_SECONDS", str(SESSION_TIMEOUT_SECONDS)))
 SESSION_DEADLINE_FILE = Path(os.environ.get("PORTAL_SESSION_DEADLINE_FILE", "/run/teslausb-portal-session.deadline"))
@@ -187,8 +188,18 @@ def update_hotspot_settings(ssid, password=None):
     return hotspot_status()
 
 
-def run_quiet(command):
-    return subprocess.run(command, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout.strip()
+def run_quiet(command, timeout=20):
+    try:
+        return subprocess.run(command, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout).stdout.strip()
+    except subprocess.TimeoutExpired as exc:
+        return (exc.stdout or exc.stderr or "").strip()
+
+
+def run_checked(command, timeout=30):
+    completed = subprocess.run(command, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stdout.strip() or f"{command[0]} failed")
+    return completed.stdout.strip()
 
 
 def systemctl_active(service):
@@ -201,12 +212,15 @@ def wifi_status():
     portal_ip = "192.168.50.1" in ip_output
     hotspot_active = systemctl_active("hostapd")
     wifi_active = systemctl_active("NetworkManager")
-    mode = "hotspot" if portal_ip and hotspot_active else "wifi"
+    active_connection = run_quiet(["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"]) if shutil.which("nmcli") else ""
+    nm_hotspot_active = any(line.split(":", 1)[0] == HOTSPOT_CONNECTION and line.endswith(":wlan0") for line in active_connection.splitlines())
+    mode = "hotspot" if portal_ip and (hotspot_active or nm_hotspot_active) else "wifi"
     return {
         "mode": mode,
         "current_ssid": current_ssid,
         "wlan0": ip_output,
         "hotspot_active": hotspot_active,
+        "nm_hotspot_active": nm_hotspot_active,
         "wifi_manager_active": wifi_active,
         "portal_ip": "192.168.50.1",
     }
@@ -238,19 +252,43 @@ def scan_wifi_networks():
 
 def apply_hotspot_mode_later():
     time.sleep(1)
-    run_quiet(["systemctl", "disable", "--now", "NetworkManager"])
-    run_quiet(["systemctl", "enable", "--now", "teslausb-portal-network.service"])
-    run_quiet(["systemctl", "enable", "--now", "dnsmasq"])
-    run_quiet(["systemctl", "enable", "--now", "hostapd"])
+    status = hotspot_status()
+    ssid = status["ssid"]
+    password = status["default_password_hint"]
+    config = read_hostapd_config()
+    if config.get("wpa_passphrase"):
+        password = config["wpa_passphrase"]
+    run_quiet(["systemctl", "enable", "--now", "NetworkManager"], timeout=45)
+    run_quiet(["systemctl", "disable", "--now", "hostapd"], timeout=45)
+    run_quiet(["systemctl", "disable", "--now", "dnsmasq"], timeout=45)
+    run_quiet(["systemctl", "disable", "--now", "teslausb-portal-network.service"], timeout=45)
+    if not shutil.which("nmcli"):
+        return
+    run_quiet(["nmcli", "connection", "down", HOTSPOT_CONNECTION], timeout=15)
+    run_quiet(["nmcli", "connection", "delete", HOTSPOT_CONNECTION], timeout=15)
+    run_checked(["nmcli", "connection", "add", "type", "wifi", "ifname", "wlan0", "con-name", HOTSPOT_CONNECTION, "autoconnect", "yes", "ssid", ssid], timeout=30)
+    run_checked([
+        "nmcli", "connection", "modify", HOTSPOT_CONNECTION,
+        "802-11-wireless.mode", "ap",
+        "802-11-wireless.band", "bg",
+        "ipv4.method", "shared",
+        "ipv4.addresses", "192.168.50.1/24",
+        "ipv6.method", "ignore",
+        "wifi-sec.key-mgmt", "wpa-psk",
+        "wifi-sec.psk", password,
+    ], timeout=30)
+    run_checked(["nmcli", "connection", "up", HOTSPOT_CONNECTION], timeout=45)
 
 
 def apply_wifi_mode_later(ssid, password=None):
     time.sleep(1)
-    run_quiet(["systemctl", "disable", "--now", "hostapd"])
-    run_quiet(["systemctl", "disable", "--now", "dnsmasq"])
-    run_quiet(["systemctl", "disable", "--now", "teslausb-portal-network.service"])
-    run_quiet(["systemctl", "enable", "--now", "NetworkManager"])
-    run_quiet(["nmcli", "radio", "wifi", "on"])
+    run_quiet(["systemctl", "disable", "--now", "hostapd"], timeout=45)
+    run_quiet(["systemctl", "disable", "--now", "dnsmasq"], timeout=45)
+    run_quiet(["systemctl", "disable", "--now", "teslausb-portal-network.service"], timeout=45)
+    run_quiet(["systemctl", "enable", "--now", "NetworkManager"], timeout=45)
+    run_quiet(["nmcli", "connection", "down", HOTSPOT_CONNECTION], timeout=15)
+    run_quiet(["nmcli", "connection", "delete", HOTSPOT_CONNECTION], timeout=15)
+    run_quiet(["nmcli", "radio", "wifi", "on"], timeout=15)
     if password:
         run_quiet(["nmcli", "dev", "wifi", "connect", ssid, "password", password, "ifname", "wlan0"])
     else:
